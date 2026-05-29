@@ -11,7 +11,7 @@ import type { BrandTemplateSummary } from '~/types/brandTemplate';
 import { getBrandTemplatesClient } from '~/lib/brand-templates/client';
 
 export const meta: MetaFunction = () => [
-  { title: 'Brand templates — Bedrock Vibe' },
+  { title: 'Brand templates — Vibe' },
   {
     name: 'description',
     content:
