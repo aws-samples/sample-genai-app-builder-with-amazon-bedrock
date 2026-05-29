@@ -3,5 +3,3 @@ export interface VibeArtifactData {
   title: string;
 }
 
-/** @deprecated Use VibeArtifactData instead */
-export type BoltArtifactData = VibeArtifactData;

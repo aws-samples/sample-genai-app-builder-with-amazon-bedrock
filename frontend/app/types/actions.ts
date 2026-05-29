@@ -17,8 +17,3 @@ export type VibeAction = FileAction | ShellAction;
 
 export type VibeActionData = VibeAction | BaseAction;
 
-/** @deprecated Use VibeAction instead */
-export type BoltAction = VibeAction;
-
-/** @deprecated Use VibeActionData instead */
-export type BoltActionData = VibeActionData;
