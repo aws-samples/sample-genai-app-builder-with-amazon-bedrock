@@ -1,5 +1,5 @@
 {
-  "name": "bedrock-vibe",
+  "name": "genai-app-builder-with-amazon-bedrock",
   "version": "1.0.0",
   "description": "Bedrock Vibe - AI-powered web development agent",
   "scripts": {

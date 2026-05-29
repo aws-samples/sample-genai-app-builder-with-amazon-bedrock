@@ -45,7 +45,7 @@ _ALLOWED_IMAGE_MIME_PREFIX = "image/"
 _ALLOWED_HTML_MIME = {"text/html", "application/xhtml+xml"}
 _ALLOWED_HTML_MIME_STARTSWITH = ("text/html",)
 
-_USER_AGENT = "bedrock-vibe-design-skills/1.0"
+_USER_AGENT = "genai-app-builder/1.0"
 
 # AWS and cloud metadata addresses — reject outright.
 _METADATA_ADDRS = {
