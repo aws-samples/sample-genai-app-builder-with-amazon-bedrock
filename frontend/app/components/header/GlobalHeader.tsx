@@ -30,7 +30,7 @@ export default function GlobalHeader() {
         <div className="fixed top-0 left-0 right-0 z-50 bg-bolt-elements-background-depth-1 border-b border-bolt-elements-borderColor">
             <div className="flex items-center justify-between px-6 py-4">
                 <div className="flex items-center gap-2">
-                    <img src="/bedrock_vibe_192x192.png" alt="Vibe" className="w-8 h-8" />
+                    <img src="/vibe-icon-192.png" alt="Vibe" className="w-8 h-8" />
                     <h1 className="text-xl font-semibold text-bolt-elements-textPrimary">
                         {APP_NAME}
                     </h1>
