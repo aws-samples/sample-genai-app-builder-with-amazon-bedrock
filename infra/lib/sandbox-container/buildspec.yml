@@ -2,13 +2,13 @@ version: 0.2
 
 env:
   variables:
-    ECR_REPO: 757434564405.dkr.ecr.us-west-2.amazonaws.com/bd-vibe-final-sandbox
+    ECR_REPO: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${STACK_PREFIX}-sandbox
 
 phases:
   pre_build:
     commands:
       - echo Logging in to ECR...
-      - aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin 757434564405.dkr.ecr.us-west-2.amazonaws.com
+      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
       - IMAGE_TAG=${IMAGE_TAG:-${CODEBUILD_RESOLVED_SOURCE_VERSION:-latest}}
   build:
     commands:
