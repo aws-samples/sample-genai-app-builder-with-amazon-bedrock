@@ -13,27 +13,7 @@ An AI-powered web development agent that allows you to prompt, run, edit, and de
 
 ## Architecture
 
-```
-┌─────────────┐     ┌──────────────┐     ┌─────────────────┐
-│  CloudFront │────▶│  API Gateway │────▶│  Lambda (Remix)  │
-│    (CDN)    │     │  + Cognito   │     │  Server-Side     │
-└─────────────┘     └──────────────┘     └────────┬────────┘
-                                                   │
-                    ┌──────────────┐               │
-                    │   Bedrock    │◀──────────────┘
-                    │  (Claude)    │
-                    └──────────────┘     ┌─────────────────┐
-                                         │  ECS Fargate    │
-                    ┌──────────────┐     │  (Sandbox)      │
-                    │  DynamoDB    │     └─────────────────┘
-                    │  (Sessions)  │
-                    └──────────────┘     ┌─────────────────┐
-                                         │  S3 (Static     │
-                    ┌──────────────┐     │   Assets)       │
-                    │ Brand Templ. │     └─────────────────┘
-                    │  Lambda+DDB  │
-                    └──────────────┘
-```
+![Architecture Diagram](docs/architecture-diagram.png)
 
 ## Prerequisites
 
