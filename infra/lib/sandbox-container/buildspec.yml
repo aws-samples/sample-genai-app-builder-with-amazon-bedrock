@@ -1,0 +1,25 @@
+version: 0.2
+
+env:
+  variables:
+    ECR_REPO: 757434564405.dkr.ecr.us-west-2.amazonaws.com/bd-vibe-final-sandbox
+
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to ECR...
+      - aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin 757434564405.dkr.ecr.us-west-2.amazonaws.com
+      - IMAGE_TAG=${IMAGE_TAG:-${CODEBUILD_RESOLVED_SOURCE_VERSION:-latest}}
+  build:
+    commands:
+      - echo Building sidecar container...
+      - cd infra/lib/sandbox-container
+      - docker build --platform linux/amd64 -t $ECR_REPO:$IMAGE_TAG -t $ECR_REPO:latest .
+  post_build:
+    commands:
+      - echo Pushing to ECR...
+      - docker push $ECR_REPO:$IMAGE_TAG
+      - docker push $ECR_REPO:latest
+      - echo "Verifying pushed image..."
+      - docker manifest inspect $ECR_REPO:$IMAGE_TAG > /dev/null || { echo "❌ Image tag $IMAGE_TAG not found in ECR after push"; exit 1; }
+      - echo "✅ Build complete - $ECR_REPO:$IMAGE_TAG"

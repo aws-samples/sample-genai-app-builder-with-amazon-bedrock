@@ -1,0 +1,439 @@
+{
+  "$id": "https://bedrock-vibe/schemas/brand-template.v2.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BrandTemplate",
+  "description": "Structured design specification extracted from inspiration images or a public URL. Conceptually inspired by Anthropic's frontend-brand template (Apache 2.0, see NOTICE). Captures tokens AND principles — register, color strategy, theme scene, hierarchy, anti-references, copy voice — so a downstream code generator has the decisions, not just the values.",
+  "type": "object",
+  "required": [
+    "userId",
+    "skillId",
+    "name",
+    "status",
+    "createdAt",
+    "updatedAt",
+    "source",
+    "extractionJobId",
+    "register",
+    "styleDescriptor",
+    "colorStrategy",
+    "theme",
+    "informationHierarchy",
+    "copyVoice",
+    "palette",
+    "typography",
+    "borders",
+    "shadows",
+    "spacing",
+    "motion",
+    "schemaVersion"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "userId": { "type": "string", "minLength": 1 },
+    "skillId": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "extractionJobId": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "description": { "type": "string", "maxLength": 500 },
+    "tags": {
+      "type": "array",
+      "maxItems": 10,
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" }
+    },
+    "status": { "enum": ["processing", "ready", "failed"] },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "source": { "enum": ["images", "url", "declared"] },
+    "sourceImages": { "type": "array", "items": { "type": "string" } },
+    "sourceUrl": { "type": "string", "pattern": "^https://" },
+    "sourceResolvedUrl": { "type": "string", "pattern": "^https://" },
+    "sourceScreenshotKey": { "type": "string" },
+
+    "register": {
+      "type": "object",
+      "description": "Brand (design IS the product) vs Product (design SERVES the product). Drives copy density, motion, hierarchy, and color commitment.",
+      "required": ["kind", "rationale"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["brand", "product"] },
+        "rationale": { "type": "string", "minLength": 10, "maxLength": 400 }
+      }
+    },
+
+    "styleDescriptor": {
+      "type": "object",
+      "required": ["label", "rationale", "adjectives"],
+      "additionalProperties": false,
+      "properties": {
+        "label": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "rationale": { "type": "string", "minLength": 10, "maxLength": 500 },
+        "adjectives": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 8,
+          "items": { "type": "string", "minLength": 1, "maxLength": 30 }
+        }
+      }
+    },
+
+    "colorStrategy": {
+      "type": "object",
+      "description": "Commitment tier on the restrained→drenched axis. Accent coverage percentage is informational — only Restrained enforces a <=10% cap.",
+      "required": ["tier", "rationale"],
+      "additionalProperties": false,
+      "properties": {
+        "tier": { "enum": ["restrained", "committed", "full-palette", "drenched"] },
+        "accentCoveragePct": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "rationale": { "type": "string", "minLength": 10, "maxLength": 500 }
+      }
+    },
+
+    "theme": {
+      "type": "object",
+      "description": "Light vs dark + a concrete scene sentence that forces the choice (who, where, under what ambient light, in what mood).",
+      "required": ["mode", "sceneSentence", "rationale"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["light", "dark"] },
+        "sceneSentence": { "type": "string", "minLength": 20, "maxLength": 300 },
+        "rationale": { "type": "string", "minLength": 10, "maxLength": 300 }
+      }
+    },
+
+    "informationHierarchy": {
+      "type": "object",
+      "description": "Focal order and principles the design uses to direct attention.",
+      "required": ["focalOrder", "principles"],
+      "additionalProperties": false,
+      "properties": {
+        "focalOrder": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "items": {
+            "type": "object",
+            "required": ["rank", "element", "role"],
+            "additionalProperties": false,
+            "properties": {
+              "rank": { "type": "integer", "minimum": 1, "maximum": 6 },
+              "element": { "type": "string", "minLength": 1, "maxLength": 80 },
+              "role": { "type": "string", "minLength": 1, "maxLength": 200 }
+            }
+          }
+        },
+        "principles": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+        }
+      }
+    },
+
+    "antiReferences": {
+      "type": "object",
+      "description": "What this design explicitly refuses — first-order and second-order category reflexes, plus absolute bans detected in the source.",
+      "additionalProperties": false,
+      "properties": {
+        "firstOrderReflexes":  { "type": "array", "maxItems": 6, "items": { "type": "string", "maxLength": 200 } },
+        "secondOrderReflexes": { "type": "array", "maxItems": 6, "items": { "type": "string", "maxLength": 200 } },
+        "bansObserved":        {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "enum": [
+              "side-stripe-border",
+              "gradient-text",
+              "decorative-glassmorphism",
+              "hero-metric-template",
+              "identical-card-grids",
+              "modal-as-first-thought",
+              "em-dashes"
+            ]
+          }
+        }
+      }
+    },
+
+    "copyVoice": {
+      "type": "object",
+      "description": "Voice + case + forbidden patterns for generated copy.",
+      "required": ["adjectives", "case", "forbidden"],
+      "additionalProperties": false,
+      "properties": {
+        "adjectives": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 6,
+          "items": { "type": "string", "minLength": 1, "maxLength": 30 }
+        },
+        "case": { "enum": ["sentence", "title", "mixed", "all-caps", "lowercase"] },
+        "density": { "enum": ["sparse", "balanced", "dense"] },
+        "forbidden": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "type": "string", "minLength": 1, "maxLength": 80 }
+        },
+        "examples": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "object",
+            "required": ["kind", "text"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "enum": ["headline", "subhead", "body", "cta", "empty-state", "error"] },
+              "text": { "type": "string", "minLength": 1, "maxLength": 160 }
+            }
+          }
+        }
+      }
+    },
+
+    "palette": {
+      "type": "object",
+      "required": ["primary", "accent", "background", "surface", "text", "border", "states"],
+      "additionalProperties": false,
+      "properties": {
+        "primary":    { "$ref": "#/$defs/colorTokenArray" },
+        "accent":     { "$ref": "#/$defs/colorTokenArray" },
+        "background": { "$ref": "#/$defs/colorTokenArray" },
+        "surface":    { "$ref": "#/$defs/colorTokenArray" },
+        "text":       { "$ref": "#/$defs/colorTokenArray" },
+        "border":     { "$ref": "#/$defs/colorTokenArray" },
+        "states":     { "$ref": "#/$defs/colorTokenArray" }
+      }
+    },
+
+    "typography": {
+      "type": "object",
+      "required": ["scale", "families", "principles"],
+      "additionalProperties": false,
+      "properties": {
+        "scale": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": { "$ref": "#/$defs/typographyScaleEntry" }
+        },
+        "families": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sans":    { "type": "string" },
+            "serif":   { "type": "string" },
+            "mono":    { "type": "string" },
+            "display": { "type": "string" }
+          }
+        },
+        "principles": {
+          "type": "object",
+          "required": ["bodyLineLengthCh", "scaleRatio", "hierarchyStrategy"],
+          "additionalProperties": false,
+          "properties": {
+            "bodyLineLengthCh":  { "type": "integer", "minimum": 40, "maximum": 100 },
+            "scaleRatio":        { "type": "number",  "minimum": 1.0, "maximum": 2.5 },
+            "hierarchyStrategy": { "type": "string",  "minLength": 10, "maxLength": 200 },
+            "notes":             { "type": "string",  "maxLength": 400 }
+          }
+        }
+      }
+    },
+
+    "borders": {
+      "type": "object",
+      "required": ["radius", "width", "color"],
+      "additionalProperties": false,
+      "properties": {
+        "radius": { "$ref": "#/$defs/stringMap" },
+        "width":  { "$ref": "#/$defs/stringMap" },
+        "color":  { "type": "array", "items": { "$ref": "#/$defs/hexColor" } },
+        "intent": {
+          "description": "What borders do in this design language. 'none' means the design avoids borders entirely (separation comes from background contrast / whitespace). 'hairline' means 1px borders are a primary separation tool. 'filled' means filled backgrounds carry separation more than lines. 'expressive' means borders are a design element (thick, colored, asymmetric).",
+          "enum": ["none", "hairline", "filled", "expressive"]
+        },
+        "radiusIntent": {
+          "description": "The attitude toward corner rounding. 'sharp' = 0 radius / right-angle everywhere. 'subtle' = 2-4px, barely visible. 'pronounced' = 8-16px, clearly rounded. 'pill-first' = fully rounded as a recurring motif.",
+          "enum": ["sharp", "subtle", "pronounced", "pill-first"]
+        }
+      }
+    },
+
+    "shadows": {
+      "type": "object",
+      "required": ["elevation"],
+      "additionalProperties": false,
+      "properties": {
+        "elevation": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/shadowToken" }
+        },
+        "signature": {
+          "type": "array",
+          "maxItems": 4,
+          "items": { "$ref": "#/$defs/shadowToken" }
+        },
+        "intent": {
+          "description": "The design's relationship to shadows. 'none' = flat design, no elevation at all (borders/whitespace carry separation). 'subtle' = 1-2px blur, barely visible, for hover hints only. 'elevation-only' = shadows communicate Z-depth hierarchy (modals > cards > surfaces). 'distinctive' = shadows are a styled design element (soft neumorphic, hard drop, coloured).",
+          "enum": ["none", "subtle", "elevation-only", "distinctive"]
+        }
+      }
+    },
+
+    "spacing": {
+      "type": "object",
+      "required": ["base", "scale", "rhythmRules"],
+      "additionalProperties": false,
+      "properties": {
+        "base":  { "type": "string", "minLength": 1 },
+        "scale": { "$ref": "#/$defs/stringMap" },
+        "rhythmNotes": { "type": "string", "maxLength": 500 },
+        "rhythmRules": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+        }
+      }
+    },
+
+    "motion": {
+      "type": "object",
+      "required": ["tokens", "habits", "disallowedPatterns"],
+      "additionalProperties": false,
+      "properties": {
+        "tokens": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/motionToken" }
+        },
+        "habits": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+        },
+        "disallowedPatterns": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "enum": [
+              "bounce",
+              "elastic",
+              "layout-property-animation",
+              "linear-easing",
+              "springs",
+              "flashing-above-3hz"
+            ]
+          }
+        }
+      }
+    },
+
+    "exemplars": {
+      "type": "array",
+      "maxItems": 12,
+      "items": { "$ref": "#/$defs/exemplar" }
+    },
+
+    "progress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stage":   { "type": "string" },
+        "message": { "type": "string" },
+        "percent": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code":      { "type": "string" },
+        "message":   { "type": "string" },
+        "detail":    { "type": "string", "maxLength": 500 },
+        "requestId": { "type": "string", "maxLength": 80 },
+        "failedAt":  { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "$defs": {
+    "hexColor": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+    "colorToken": {
+      "type": "object",
+      "required": ["hex", "role"],
+      "additionalProperties": false,
+      "properties": {
+        "hex":   { "$ref": "#/$defs/hexColor" },
+        "role":  { "type": "string", "minLength": 1, "maxLength": 40 },
+        "usage": { "type": "string", "maxLength": 200 }
+      }
+    },
+    "colorTokenArray": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "$ref": "#/$defs/colorToken" }
+    },
+    "typographyScaleEntry": {
+      "type": "object",
+      "required": ["name", "fontFamily", "fontSize", "fontWeight", "lineHeight"],
+      "additionalProperties": false,
+      "properties": {
+        "name":          { "type": "string", "minLength": 1, "maxLength": 40 },
+        "fontFamily":    { "type": "string", "minLength": 1, "maxLength": 200 },
+        "fontSize":      { "type": "string", "minLength": 1, "maxLength": 20 },
+        "fontWeight":    { "type": "integer", "minimum": 100, "maximum": 900 },
+        "lineHeight":    { "type": "string", "minLength": 1, "maxLength": 20 },
+        "letterSpacing": { "type": "string", "maxLength": 20 }
+      }
+    },
+    "shadowToken": {
+      "type": "object",
+      "required": ["name", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "name":        { "type": "string", "minLength": 1, "maxLength": 40 },
+        "value":       { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 200 }
+      }
+    },
+    "motionToken": {
+      "type": "object",
+      "required": ["name", "duration", "easing"],
+      "additionalProperties": false,
+      "properties": {
+        "name":     { "type": "string", "minLength": 1, "maxLength": 40 },
+        "duration": { "type": "string", "minLength": 1, "maxLength": 20 },
+        "easing":   { "type": "string", "minLength": 1, "maxLength": 80 },
+        "usage":    { "type": "string", "maxLength": 200 }
+      }
+    },
+    "exemplar": {
+      "type": "object",
+      "required": ["kind", "summary", "rationale"],
+      "additionalProperties": false,
+      "properties": {
+        "kind":      { "enum": ["do", "dont"] },
+        "summary":   { "type": "string", "minLength": 1, "maxLength": 200 },
+        "rationale": { "type": "string", "minLength": 1, "maxLength": 300 }
+      }
+    },
+    "stringMap": {
+      "type": "object",
+      "minProperties": 1,
+      "patternProperties": {
+        "^[a-zA-Z0-9_-]+$": { "type": "string", "minLength": 1, "maxLength": 40 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

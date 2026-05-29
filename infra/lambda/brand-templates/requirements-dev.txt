@@ -1,0 +1,5 @@
+# Dev-only dependencies — not bundled into the Lambda package.
+-r requirements.txt
+pytest>=8.0.0
+moto[dynamodb,s3]>=5.0.0
+requests-mock>=1.12.0

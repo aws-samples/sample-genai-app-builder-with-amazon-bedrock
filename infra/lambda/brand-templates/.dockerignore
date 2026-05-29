@@ -1,0 +1,9 @@
+# Keep the Lambda bundle lean — exclude local dev artifacts.
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+tests/
+requirements-dev.txt
+.gitignore
+.dockerignore

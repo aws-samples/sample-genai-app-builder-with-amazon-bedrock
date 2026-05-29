@@ -1,0 +1,5 @@
+# Lambda-local gitignore — keep Python transient artifacts out of commits.
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc

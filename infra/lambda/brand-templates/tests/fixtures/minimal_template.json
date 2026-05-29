@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 2,
+  "userId": "cognito-sub-abc",
+  "skillId": "11111111-1111-4111-8111-111111111111",
+  "extractionJobId": "22222222-2222-4222-8222-222222222222",
+  "name": "Minimal skill",
+  "description": "Fixture used for schema validation tests.",
+  "tags": ["fixture", "test"],
+  "status": "ready",
+  "createdAt": "2026-05-05T12:00:00Z",
+  "updatedAt": "2026-05-05T12:00:00Z",
+  "source": "images",
+  "sourceImages": ["skills/cognito-sub-abc/11111111-1111-4111-8111-111111111111/input-0.png"],
+  "register": {
+    "kind": "brand",
+    "rationale": "Design IS the product — this is a portfolio-style editorial page where the typography and whitespace are the message."
+  },
+  "styleDescriptor": {
+    "label": "editorial",
+    "rationale": "High-contrast type with generous whitespace and restrained color usage.",
+    "adjectives": ["editorial", "minimal", "confident"]
+  },
+  "colorStrategy": {
+    "tier": "restrained",
+    "accentCoveragePct": 6,
+    "rationale": "Tinted neutrals carry almost the entire surface; the saturated accent appears only on the primary CTA."
+  },
+  "theme": {
+    "mode": "dark",
+    "sceneSentence": "Designer reading long-form essays on a 14-inch laptop in a dim studio after dusk, coffee in hand.",
+    "rationale": "The dim-studio scene forces a dark page to preserve the quiet mood and protect the eye from glare."
+  },
+  "informationHierarchy": {
+    "focalOrder": [
+      { "rank": 1, "element": "Display headline", "role": "Anchors the viewer, states the thesis." },
+      { "rank": 2, "element": "Primary CTA", "role": "The single saturated element on the page." }
+    ],
+    "principles": [
+      "Scale contrast over color contrast",
+      "Isolate the CTA with whitespace rather than bounding chrome"
+    ]
+  },
+  "antiReferences": {
+    "firstOrderReflexes": ["AI tool → SaaS-cream + purple gradient"],
+    "secondOrderReflexes": ["Editorial-typographic beige-and-serif as the anti-SaaS reflex"],
+    "bansObserved": ["gradient-text", "identical-card-grids"]
+  },
+  "copyVoice": {
+    "adjectives": ["confident", "editorial", "precise"],
+    "case": "sentence",
+    "density": "sparse",
+    "forbidden": ["em-dashes", "AI preamble phrases"],
+    "examples": [
+      { "kind": "headline", "text": "A quieter way to read." }
+    ]
+  },
+  "palette": {
+    "primary":    [{ "hex": "#5e6ad2", "role": "primary",    "usage": "Primary CTA." }],
+    "accent":     [{ "hex": "#f59e0b", "role": "accent",     "usage": "Highlights." }],
+    "background": [{ "hex": "#0b0e16", "role": "background", "usage": "Page bg." }],
+    "surface":    [{ "hex": "#1f2633", "role": "surface",    "usage": "Card bg." }],
+    "text":       [{ "hex": "#e6e8ec", "role": "text",       "usage": "Body text." }],
+    "border":     [{ "hex": "#262b36", "role": "border",     "usage": "Dividers." }],
+    "states":     [{ "hex": "#3b82f6", "role": "state-hover", "usage": "Hover." }]
+  },
+  "typography": {
+    "families": { "sans": "Inter", "mono": "JetBrains Mono" },
+    "scale": [
+      { "name": "body", "fontFamily": "Inter", "fontSize": "16px", "fontWeight": 400, "lineHeight": "1.5" }
+    ],
+    "principles": {
+      "bodyLineLengthCh": 72,
+      "scaleRatio": 1.333,
+      "hierarchyStrategy": "Weight + scale contrast carry the hierarchy; no color-on-text beyond the primary link.",
+      "notes": "Tight letter-spacing on headings."
+    }
+  },
+  "borders": {
+    "radius": { "sm": "4px", "md": "6px", "lg": "12px" },
+    "width":  { "thin": "1px", "normal": "2px" },
+    "color":  ["#262b36"],
+    "intent": "hairline",
+    "radiusIntent": "subtle"
+  },
+  "shadows": {
+    "elevation": [
+      { "name": "sm", "value": "0 1px 2px rgba(0,0,0,0.3)", "description": "Base elevation." }
+    ],
+    "intent": "elevation-only"
+  },
+  "spacing": {
+    "base": "4px",
+    "scale": { "xs": "4px", "sm": "8px", "md": "16px", "lg": "24px", "xl": "32px" },
+    "rhythmNotes": "Generous padding on cards.",
+    "rhythmRules": [
+      "Cards use 24px padding; list rows use 8px",
+      "Section gap is 80px on hero, 40px elsewhere"
+    ]
+  },
+  "motion": {
+    "tokens": [
+      { "name": "default", "duration": "180ms", "easing": "cubic-bezier(0.4,0,0.2,1)", "usage": "Most interactions." }
+    ],
+    "habits": ["Fades over translations"],
+    "disallowedPatterns": ["bounce", "elastic", "layout-property-animation"]
+  }
+}

@@ -1,0 +1,5 @@
+stackName: "GenAIAppBuilder"
+region: "us-west-2"
+bedrockModelId: "anthropic.claude-sonnet-4-20250514-v1:0"
+cognitoUsers:
+  - "user@example.com"

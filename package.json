@@ -1,0 +1,24 @@
+{
+  "name": "bedrock-vibe",
+  "version": "1.0.0",
+  "description": "Bedrock Vibe - AI-powered web development agent",
+  "scripts": {
+    "deploy:aws": "cd frontend && pnpm run build:aws && cd ../infra && cdk bootstrap && cdk deploy --require-approval never",
+    "build": "cd frontend && pnpm run build:aws",
+    "dev": "cd frontend && pnpm run dev"
+  },
+  "keywords": [
+    "aws",
+    "bedrock",
+    "remix",
+    "ai",
+    "cdk"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@aws-cdk/aws-apigatewayv2-alpha": "^2.114.1-alpha.0",
+    "@aws-cdk/aws-apigatewayv2-integrations-alpha": "^2.114.1-alpha.0",
+    "aws-cdk-lib": "^2.208.0"
+  }
+}

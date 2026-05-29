@@ -1,0 +1,99 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@aws-cdk/aws-apigatewayv2-alpha':
+        specifier: ^2.114.1-alpha.0
+        version: 2.114.1-alpha.0(aws-cdk-lib@2.208.0(constructs@3.4.344))(constructs@3.4.344)
+      '@aws-cdk/aws-apigatewayv2-integrations-alpha':
+        specifier: ^2.114.1-alpha.0
+        version: 2.114.1-alpha.0(@aws-cdk/aws-apigatewayv2-alpha@2.114.1-alpha.0(aws-cdk-lib@2.208.0(constructs@3.4.344))(constructs@3.4.344))(aws-cdk-lib@2.208.0(constructs@3.4.344))(constructs@3.4.344)
+      aws-cdk-lib:
+        specifier: ^2.208.0
+        version: 2.208.0(constructs@3.4.344)
+
+packages:
+
+  '@aws-cdk/asset-awscli-v1@2.2.242':
+    resolution: {integrity: sha512-4c1bAy2ISzcdKXYS1k4HYZsNrgiwbiDzj36ybwFVxEWZXVAP0dimQTCaB9fxu7sWzEjw3d+eaw6Fon+QTfTIpQ==}
+
+  '@aws-cdk/asset-node-proxy-agent-v6@2.1.0':
+    resolution: {integrity: sha512-7bY3J8GCVxLupn/kNmpPc5VJz8grx+4RKfnnJiO1LG+uxkZfANZG3RMHhE+qQxxwkyQ9/MfPtTpf748UhR425A==}
+
+  '@aws-cdk/aws-apigatewayv2-alpha@2.114.1-alpha.0':
+    resolution: {integrity: sha512-+urpw7rGrtdGvnHQlDXVfpI3TmQJpjuT9jTOeuuG5dNDczLJrUokBvQdj6H6KsngdmBC07WfWU+yL2MBp71ozA==}
+    engines: {node: '>= 14.15.0'}
+    peerDependencies:
+      aws-cdk-lib: ^2.114.1
+      constructs: ^10.0.0
+
+  '@aws-cdk/aws-apigatewayv2-integrations-alpha@2.114.1-alpha.0':
+    resolution: {integrity: sha512-iB7vHoTguDKLeatJS4p/8OBqH4oLCG2xBn1toUFwMD9iWoRGahGiK0pYuq24baab3SuNS1LFThJw5Zu0R+cZGA==}
+    engines: {node: '>= 14.15.0'}
+    peerDependencies:
+      '@aws-cdk/aws-apigatewayv2-alpha': 2.114.1-alpha.0
+      aws-cdk-lib: ^2.114.1
+      constructs: ^10.0.0
+
+  '@aws-cdk/cloud-assembly-schema@45.2.0':
+    resolution: {integrity: sha512-5TTUkGHQ+nfuUGwKA8/Yraxb+JdNUh4np24qk/VHXmrCMq+M6HfmGWfhcg/QlHA2S5P3YIamfYHdQAB4uSNLAg==}
+    engines: {node: '>= 18.0.0'}
+    bundledDependencies:
+      - jsonschema
+      - semver
+
+  aws-cdk-lib@2.208.0:
+    resolution: {integrity: sha512-lZW475enKz36A/hZvS7xUwfjeqLqxKgBmZ2cGA7BB5PAlQsjBfN70ZGDgGl0egug5fb/hsYy1Dy4OrclfNzxFg==}
+    engines: {node: '>= 14.15.0'}
+    peerDependencies:
+      constructs: ^10.0.0
+    bundledDependencies:
+      - '@balena/dockerignore'
+      - case
+      - fs-extra
+      - ignore
+      - jsonschema
+      - minimatch
+      - punycode
+      - semver
+      - table
+      - yaml
+      - mime-types
+
+  constructs@3.4.344:
+    resolution: {integrity: sha512-Qq3upn44oGdvgasHUKWVFsrynyYrtVRd9fd8ko9cJOrFzx9eCm3iI4bhBryQqaISdausbTYUOXmoEe/YSJ16Nw==}
+    engines: {node: '>= 16.14.0'}
+
+snapshots:
+
+  '@aws-cdk/asset-awscli-v1@2.2.242': {}
+
+  '@aws-cdk/asset-node-proxy-agent-v6@2.1.0': {}
+
+  '@aws-cdk/aws-apigatewayv2-alpha@2.114.1-alpha.0(aws-cdk-lib@2.208.0(constructs@3.4.344))(constructs@3.4.344)':
+    dependencies:
+      aws-cdk-lib: 2.208.0(constructs@3.4.344)
+      constructs: 3.4.344
+
+  '@aws-cdk/aws-apigatewayv2-integrations-alpha@2.114.1-alpha.0(@aws-cdk/aws-apigatewayv2-alpha@2.114.1-alpha.0(aws-cdk-lib@2.208.0(constructs@3.4.344))(constructs@3.4.344))(aws-cdk-lib@2.208.0(constructs@3.4.344))(constructs@3.4.344)':
+    dependencies:
+      '@aws-cdk/aws-apigatewayv2-alpha': 2.114.1-alpha.0(aws-cdk-lib@2.208.0(constructs@3.4.344))(constructs@3.4.344)
+      aws-cdk-lib: 2.208.0(constructs@3.4.344)
+      constructs: 3.4.344
+
+  '@aws-cdk/cloud-assembly-schema@45.2.0': {}
+
+  aws-cdk-lib@2.208.0(constructs@3.4.344):
+    dependencies:
+      '@aws-cdk/asset-awscli-v1': 2.2.242
+      '@aws-cdk/asset-node-proxy-agent-v6': 2.1.0
+      '@aws-cdk/cloud-assembly-schema': 45.2.0
+      constructs: 3.4.344
+
+  constructs@3.4.344: {}
