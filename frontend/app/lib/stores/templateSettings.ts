@@ -50,7 +50,7 @@ export class TemplateSettingsStore {
   #loadFromLocalStorage() {
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
-        const storedValue = window.localStorage.getItem('bolt_enable_template');
+        const storedValue = window.localStorage.getItem('vibe_enable_template');
         if (storedValue !== null) {
           this.enableTemplate.set(storedValue === 'true');
           logger.debug(`Loaded template setting from localStorage: ${storedValue === 'true'}`);
@@ -67,7 +67,7 @@ export class TemplateSettingsStore {
   #saveToLocalStorage() {
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
-        window.localStorage.setItem('bolt_enable_template', String(this.enableTemplate.get()));
+        window.localStorage.setItem('vibe_enable_template', String(this.enableTemplate.get()));
       }
     } catch (error) {
       logger.error('Failed to save settings to localStorage:', error);

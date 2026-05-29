@@ -157,7 +157,7 @@ export async function streamText(messages: Messages, options?: StreamingOptions 
             }
 
             // Analytics: count artifacts (websites created) and emit metrics
-            const artifactCount = (fullResponse.match(/<boltArtifact/g) || []).length;
+            const artifactCount = (fullResponse.match(/<vibeArtifact/g) || []).length;
             emitMetric(
               { WebsiteCreated: artifactCount, InputTokens: inputTokens, OutputTokens: outputTokens },
               { Model: modelId },

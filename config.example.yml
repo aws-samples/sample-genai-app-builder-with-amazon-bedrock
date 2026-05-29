@@ -1,5 +1,5 @@
 # Configuration for genai-app-builder-with-amazon-bedrock
-# Copy this file to config.yml and update the values below.
+# Copy this file to infra/config.yml and update the values below.
 
 # Stack name prefix — used for all AWS resource names.
 # Must be lowercase, alphanumeric + hyphens only.
@@ -9,3 +9,10 @@ stackName: "my-app-builder"
 # Must support Amazon Bedrock with Claude models.
 # See: https://docs.aws.amazon.com/bedrock/latest/userguide/models-regions.html
 region: "us-west-2"
+
+# Amazon Bedrock model ID for the main chat LLM.
+bedrockModelId: "anthropic.claude-sonnet-4-20250514-v1:0"
+
+# List of email addresses to create as Cognito users on first deploy.
+cognitoUsers:
+  - "user@example.com"

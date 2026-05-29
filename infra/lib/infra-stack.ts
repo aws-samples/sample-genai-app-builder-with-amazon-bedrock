@@ -48,7 +48,7 @@ export class InfraStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: InfraStackProps) {
     super(scope, id, {
       ...props,
-      description: "Bedrock Vibe - AI-powered web development agent (uksb-4t2x71ky88)"
+      description: "Vibe - AI-powered web development agent (uksb-4t2x71ky88)"
     });
 
     const { config } = props;
@@ -59,7 +59,7 @@ export class InfraStack extends cdk.Stack {
     // Customer-managed KMS key for encryption
     const encryptionKey = new kms.Key(this, 'BedrockVibeEncryptionKey', {
       alias: `${stackPrefix}-encryption-key`,
-      description: 'Customer-managed KMS key for Bedrock Vibe encryption',
+      description: 'Customer-managed KMS key for Vibe encryption',
       enableKeyRotation: true,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       policy: new iam.PolicyDocument({
@@ -219,10 +219,10 @@ export class InfraStack extends cdk.Stack {
         email: true,
       },
       userVerification: {
-        emailSubject: 'Welcome to Bedrock Vibe - Verify your account',
+        emailSubject: 'Welcome to Vibe - Verify your account',
         emailBody: `Hello {username},
 
-Welcome to Bedrock Vibe - an AI-powered web development platform!
+Welcome to Vibe - an AI-powered web development platform!
 
 Please click the link below to verify your email and set your password:
 {##Verify Email##}
@@ -230,7 +230,7 @@ Please click the link below to verify your email and set your password:
 Once verified, you can sign in at the application URL provided in your deployment.
 
 Best regards,
-The Bedrock Vibe Team`,
+The Vibe Team`,
         emailStyle: cognito.VerificationEmailStyle.LINK,
       },
     });
@@ -950,7 +950,7 @@ function handler(event) {
     // Response headers policy for security headers
     const securityHeadersPolicy = new cloudfront.ResponseHeadersPolicy(this, 'SecurityHeadersPolicy', {
       responseHeadersPolicyName: `${stackPrefix}-security-headers`,
-      comment: 'Security headers for Bedrock Vibe',
+      comment: 'Security headers for Vibe',
       securityHeadersBehavior: {
         contentTypeOptions: { override: true },
         frameOptions: { frameOption: cloudfront.HeadersFrameOption.SAMEORIGIN, override: true },

@@ -1,7 +1,7 @@
 {
   "name": "genai-app-builder-with-amazon-bedrock",
   "version": "1.0.0",
-  "description": "Bedrock Vibe - AI-powered web development agent",
+  "description": "AI-powered web development agent built on Amazon Bedrock",
   "scripts": {
     "deploy:aws": "cd frontend && pnpm run build:aws && cd ../infra && cdk bootstrap && cdk deploy --require-approval never",
     "build": "cd frontend && pnpm run build:aws",
@@ -15,7 +15,7 @@
     "cdk"
   ],
   "author": "",
-  "license": "MIT",
+  "license": "MIT-0",
   "dependencies": {
     "@aws-cdk/aws-apigatewayv2-alpha": "^2.114.1-alpha.0",
     "@aws-cdk/aws-apigatewayv2-integrations-alpha": "^2.114.1-alpha.0",

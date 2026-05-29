@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Bedrock Vibe Deployment Script
+# Vibe Deployment Script
 # This script installs dependencies and deploys the application to AWS
 
 set -e  # Exit on any error
 
-echo "🚀 Starting Bedrock Vibe deployment..."
+echo "🚀 Starting Vibe deployment..."
 echo ""
 
 # Load stack configuration early (accept optional config file argument, e.g. ./deploy.sh infra/config.prod.yml)

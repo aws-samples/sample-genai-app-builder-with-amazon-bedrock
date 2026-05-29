@@ -7,4 +7,6 @@ dist/
 .DS_Store
 frontend/public/aws-exports.json
 infra/cdk.context.json
+infra/config.yml
+frontend/app/lib/build-config.ts
 *.tsbuildinfo

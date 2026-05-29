@@ -22,7 +22,7 @@ export const Markdown = memo(({ children, html = false, limitedMarkdown = false 
   const components = useMemo(() => {
     return {
       div: ({ className, children, node, ...props }) => {
-        if (className?.includes('__boltArtifact__')) {
+        if (className?.includes('__vibeArtifact__')) {
           const messageId = node?.properties.dataMessageId as string;
 
           if (!messageId) {

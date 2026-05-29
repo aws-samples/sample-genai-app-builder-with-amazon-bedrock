@@ -28,7 +28,7 @@ export function HeaderActionButtons({ className }: HeaderActionButtonsProps) {
             }
           }}
         >
-          <div className="i-bolt:chat text-sm" />
+          <div className="i-vibe:chat text-sm" />
         </Button>
         <div className="w-[1px] bg-bolt-elements-borderColor" />
         <Button
