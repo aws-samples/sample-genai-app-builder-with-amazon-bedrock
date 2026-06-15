@@ -29,5 +29,11 @@
     "**/.server/**/*.tsx",
     "**/.client/**/*.ts",
     "**/.client/**/*.tsx"
+  ],
+  "exclude": [
+    "node_modules",
+    "metrics-lambda",
+    "server.ts",
+    "streaming.ts"
   ]
 }

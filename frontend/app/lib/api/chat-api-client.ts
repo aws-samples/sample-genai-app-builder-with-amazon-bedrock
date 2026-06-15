@@ -147,8 +147,6 @@ export class ChatApiClient extends ApiClientBase {
 
         const session = await fetchAuthSession({
             forceRefresh,
-            // Extend session duration to 1 hour for longer chat sessions
-            sessionDuration: 3600
         });
 
         const credentials = session.credentials;
@@ -234,8 +232,6 @@ export class ChatApiClient extends ApiClientBase {
                 sessionToken: credentials.sessionToken,
             },
             sha256: Sha256,
-            // Ensure consistent timestamp for signature calculation
-            systemClockOffset: 0,
         });
 
         // SigV4 for Lambda Function URLs requires `Host` (or HTTP/2

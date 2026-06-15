@@ -1,4 +1,4 @@
-import { APIGatewayRequestAuthorizerEvent, APIGatewayAuthorizerResult } from 'aws-lambda';
+import type { APIGatewayRequestAuthorizerEvent, APIGatewayAuthorizerResult } from 'aws-lambda';
 
 // JWT authorizer - validates token structure and expiry
 // For production, add JWKS validation against your Cognito User Pool's JWKS endpoint
