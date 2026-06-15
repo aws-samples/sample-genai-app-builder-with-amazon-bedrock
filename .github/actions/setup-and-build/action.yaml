@@ -29,4 +29,5 @@ runs:
       shell: bash
       run: |
         pnpm install
+        cd frontend && pnpm install && cd ..
         pnpm run build
