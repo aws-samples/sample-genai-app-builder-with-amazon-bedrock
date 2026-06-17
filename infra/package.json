@@ -39,7 +39,7 @@
     "@aws-cdk/aws-apigatewayv2-alpha": "^2.114.1-alpha.0",
     "@aws-cdk/aws-apigatewayv2-integrations-alpha": "^2.114.1-alpha.0",
     "@aws-cdk/aws-cognito-identitypool-alpha": "^2.114.1-alpha.0",
-    "aws-cdk-lib": "^2.233.0",
+    "aws-cdk-lib": "^2.260.0",
     "constructs": "^10.0.0",
     "js-yaml": "^4.1.0"
   },
