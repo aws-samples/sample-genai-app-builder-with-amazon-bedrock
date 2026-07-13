@@ -41,6 +41,6 @@
     "@aws-sdk/client-cloudwatch-logs": "^3.1073.0",
     "aws-cdk-lib": "^2.233.0",
     "constructs": "^10.0.0",
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^4.2.0"
   }
 }
