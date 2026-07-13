@@ -17,7 +17,7 @@ import {
 import { claimWarmTask, stopTask } from './ecs-manager';
 import type { ApiResponse } from './types';
 
-const PREVIEW_DOMAIN = process.env.PREVIEW_DOMAIN || '';
+const PREVIEW_DOMAIN = process.env.PREVIEW_DOMAIN || 'preview.vibe.proserve.aws.dev';
 const ALB_DNS_NAME = process.env.ALB_DNS_NAME || '';
 const CLOUDFRONT_DOMAIN_PARAM = process.env.CLOUDFRONT_DOMAIN_PARAM || '';
 const METRIC_NAMESPACE = process.env.METRIC_NAMESPACE || '';

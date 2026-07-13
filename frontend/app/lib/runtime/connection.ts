@@ -269,7 +269,16 @@ export class RuntimeConnectionImpl implements RuntimeConnection {
         return;
       }
 
-      this.connect().catch((err) => {
+      this.connect().then(() => {
+        logger.debug('Reconnected successfully');
+        const handlers = this.#handlers.get('system:reconnected');
+        if (handlers) {
+          const msg = { type: 'system:reconnected', id: '', timestamp: Date.now(), payload: {} } as WSMessage;
+          for (const handler of handlers) {
+            try { handler(msg); } catch (err) { logger.error('Reconnect handler error:', err); }
+          }
+        }
+      }).catch((err) => {
         logger.error('Reconnect failed:', err.message);
       });
     }, delay);

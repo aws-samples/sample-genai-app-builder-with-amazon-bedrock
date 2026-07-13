@@ -1,17 +1,45 @@
-import js from '@eslint/js';
-import tsPlugin from '@typescript-eslint/eslint-plugin';
-import tsParser from '@typescript-eslint/parser';
+import blitzPlugin from '@blitz/eslint-plugin';
+import { jsFileExtensions } from '@blitz/eslint-plugin/dist/configs/javascript.js';
+import { getNamingConventionRule, tsFileExtensions } from '@blitz/eslint-plugin/dist/configs/typescript.js';
 
 export default [
-  js.configs.recommended,
   {
-    files: ['**/*.ts', '**/*.tsx'],
-    plugins: { '@typescript-eslint': tsPlugin },
-    languageOptions: { parser: tsParser },
+    ignores: ['**/dist', '**/node_modules', '**/bolt/build', '**/build'],
+  },
+  ...blitzPlugin.configs.recommended(),
+  {
     rules: {
-      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
-      'no-unused-vars': 'off',
+      '@blitz/catch-error-name': 'off',
+      '@typescript-eslint/no-this-alias': 'off',
+      '@typescript-eslint/no-empty-object-type': 'off',
     },
   },
-  { ignores: ['build/', 'node_modules/', '*.cjs'] },
+  {
+    files: ['**/*.tsx'],
+    rules: {
+      ...getNamingConventionRule({}, true),
+    },
+  },
+  {
+    files: ['**/*.d.ts'],
+    rules: {
+      '@typescript-eslint/no-empty-object-type': 'off',
+    },
+  },
+  {
+    files: [...tsFileExtensions, ...jsFileExtensions, '**/*.tsx'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['../'],
+              message: `Relative imports are not allowed. Please use '~/' instead.`,
+            },
+          ],
+        },
+      ],
+    },
+  },
 ];

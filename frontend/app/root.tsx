@@ -15,8 +15,8 @@ import 'virtual:uno.css';
 export const links: LinksFunction = () => [
   {
     rel: 'icon',
-    href: '/favicon.png',
-    type: 'image/png',
+    href: '/favicon.ico',
+    type: 'image/x-icon',
   },
   { rel: 'stylesheet', href: reactToastifyStyles },
   { rel: 'stylesheet', href: tailwindReset },
@@ -46,7 +46,7 @@ export const Head = createHead(() => (
     <meta charSet="utf-8" />
     <meta httpEquiv="Content-Type" content="text/html;charset=utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Vibe</title>
+    <title>Bedrock Vibe</title>
     <Meta />
     <Links />
     <script dangerouslySetInnerHTML={{ __html: inlineThemeCode }} />

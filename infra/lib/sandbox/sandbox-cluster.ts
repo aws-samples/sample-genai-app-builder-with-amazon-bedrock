@@ -38,8 +38,8 @@ export class SandboxCluster extends Construct {
     // Fargate Task Definition
     this.taskDefinition = new ecs.FargateTaskDefinition(this, 'TaskDef', {
       family: `${stackPrefix}-sandbox-task`,
-      cpu: 1024,        // 1 vCPU
-      memoryLimitMiB: 3072, // 3 GB
+      cpu: 2048,        // 2 vCPU
+      memoryLimitMiB: 6144, // 6 GB
       ephemeralStorageGiB: 30,
     });
 

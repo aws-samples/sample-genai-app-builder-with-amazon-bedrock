@@ -81,12 +81,12 @@ export function diffFiles(fileName: string, oldFileContent: string, newFileConte
  * Example:
  *
  * ```html
- * <vibe_file_modifications>
+ * <bolt_file_modifications>
  * <diff path="/home/sandbox/project/index.js">
  * - console.log('Hello, World!');
  * + console.log('Hello, Vibe!');
  * </diff>
- * </vibe_file_modifications>
+ * </bolt_file_modifications>
  * ```
  */
 export function fileModificationsToHTML(modifications: FileModifications) {

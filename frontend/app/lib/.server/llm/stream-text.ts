@@ -39,7 +39,7 @@ function filterOutput(content: string): string {
     .replace(/\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/g, '[REDACTED-PHONE]'); // Any phone numbers
 }
 
-export async function streamText(messages: Messages, options?: StreamingOptions & { modelId?: string; brandTemplateBlock?: string }, enableTemplate?: boolean) {
+export async function streamText(messages: Messages, options?: StreamingOptions & { modelId?: string; brandTemplateBlock?: string; userId?: string }, enableTemplate?: boolean) {
   const region = getAWSRegion();
 
   // Convert messages to Bedrock format with input sanitization
@@ -160,7 +160,7 @@ export async function streamText(messages: Messages, options?: StreamingOptions 
             const artifactCount = (fullResponse.match(/<vibeArtifact/g) || []).length;
             emitMetric(
               { WebsiteCreated: artifactCount, InputTokens: inputTokens, OutputTokens: outputTokens },
-              { Model: modelId },
+              { Model: modelId, UserId: options?.userId || 'anonymous' },
             );
 
             controller.close();

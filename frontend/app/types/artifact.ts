@@ -1,5 +1,4 @@
-export interface VibeArtifactData {
+export interface BoltArtifactData {
   id: string;
   title: string;
 }
-

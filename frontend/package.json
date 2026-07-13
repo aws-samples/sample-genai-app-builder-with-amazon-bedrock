@@ -1,8 +1,8 @@
 {
-  "name": "vibe",
-  "description": "AI-powered web development agent built on Amazon Bedrock",
+  "name": "bolt",
+  "description": "StackBlitz AI Agent",
   "private": true,
-  "license": "MIT-0",
+  "license": "MIT",
   "packageManager": "pnpm@9.4.0",
   "sideEffects": false,
   "type": "module",
@@ -88,6 +88,7 @@
     "unist-util-visit": "^5.0.0"
   },
   "devDependencies": {
+    "@blitz/eslint-plugin": "0.1.0",
     "@remix-run/dev": "^2.17.4",
     "@types/aws-lambda": "^8.10.152",
     "@types/diff": "^5.2.3",
@@ -108,7 +109,7 @@
     "vite-plugin-node-polyfills": "^0.22.0",
     "vite-plugin-optimize-css-modules": "^1.2.0",
     "vite-tsconfig-paths": "^4.3.2",
-    "vitest": "^3.2.6",
+    "vitest": "^2.1.9",
     "zod": "^3.25.76"
   },
   "resolutions": {

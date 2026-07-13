@@ -86,7 +86,6 @@ export class SandboxInfrastructure extends Construct {
       repository: ecrRepo,
       cluster: this.cluster.cluster,
       service: this.cluster.service,
-      containerDir: path.join(__dirname, '..', 'sandbox-container'),
     });
 
     // CloudFormation Outputs
