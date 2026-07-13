@@ -1,6 +1,6 @@
 import { map, type MapStore } from 'nanostores';
 import * as nodePath from 'node:path';
-import type { VibeAction } from '~/types/actions';
+import type { BoltAction } from '~/types/actions';
 import { createScopedLogger } from '~/utils/logger';
 import { unreachable } from '~/utils/unreachable';
 import type { ActionCallbackData } from './message-parser';
@@ -10,14 +10,14 @@ const logger = createScopedLogger('ActionRunner');
 
 export type ActionStatus = 'pending' | 'running' | 'complete' | 'aborted' | 'failed';
 
-export type BaseActionState = VibeAction & {
+export type BaseActionState = BoltAction & {
   status: Exclude<ActionStatus, 'failed'>;
   abort: () => void;
   executed: boolean;
   abortSignal: AbortSignal;
 };
 
-export type FailedActionState = VibeAction &
+export type FailedActionState = BoltAction &
   Omit<BaseActionState, 'status'> & {
     status: Extract<ActionStatus, 'failed'>;
     error: string;
@@ -36,11 +36,16 @@ type ActionsMap = MapStore<Record<string, ActionState>>;
 export class ActionRunner {
   #connection: Promise<RuntimeConnection>;
   #currentExecutionPromise: Promise<void> = Promise.resolve();
+  #onDevServerStart: ((command: string) => void) | null = null;
 
   actions: ActionsMap = map({});
 
   constructor(connectionPromise: Promise<RuntimeConnection>) {
     this.#connection = connectionPromise;
+  }
+
+  onDevServerStart(callback: (command: string) => void) {
+    this.#onDevServerStart = callback;
   }
 
   addAction(data: ActionCallbackData) {
@@ -134,6 +139,7 @@ export class ActionRunner {
     const isDevServer = /\b(npm run dev|npx vite|vite)\b/.test(action.content);
 
     if (isDevServer) {
+      this.#onDevServerStart?.(action.content);
       const portPromise = new Promise<void>((resolve) => {
         const handler = () => {
           conn.off('port:open:event', handler);

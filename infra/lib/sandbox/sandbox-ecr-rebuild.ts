@@ -12,7 +12,6 @@ export interface SandboxEcrRebuildProps {
   repository: ecr.IRepository;
   cluster: ecs.ICluster;
   service: ecs.FargateService;
-  containerDir: string;
 }
 
 export class SandboxEcrRebuild extends Construct {
@@ -21,7 +20,7 @@ export class SandboxEcrRebuild extends Construct {
   constructor(scope: Construct, id: string, props: SandboxEcrRebuildProps) {
     super(scope, id);
 
-    const { stackPrefix, repository, cluster, service, containerDir } = props;
+    const { stackPrefix, repository, cluster, service } = props;
     const account = cdk.Stack.of(this).account;
     const region = cdk.Stack.of(this).region;
 
@@ -59,7 +58,10 @@ export class SandboxEcrRebuild extends Construct {
               'echo "=== Pushing to ECR ==="',
               `docker push ${repository.repositoryUri}:latest`,
               'echo "=== Forcing ECS redeployment ==="',
-              `aws ecs update-service --cluster ${cluster.clusterName} --service ${service.serviceName} --force-new-deployment --region ${region}`,
+              // Don't fail the whole build if the service is mid-deploy or
+              // temporarily unavailable — the image is already pushed and the
+              // next rebuild (or a manual force-deploy) will pick it up.
+              `aws ecs update-service --cluster ${cluster.clusterName} --service ${service.serviceName} --force-new-deployment --region ${region} || echo "WARNING: ECS force-deploy failed; image is pushed, redeploy manually"`,
               'echo "=== Done ==="',
             ],
           },

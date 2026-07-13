@@ -50,11 +50,13 @@ export async function action({ request }: ActionFunctionArgs) {
       messages,
       enableTemplate,
       modelId,
+      userId,
       brandTemplateBlock: clientBrandTemplateBlock,
     } = (await request.json()) as {
       messages: Messages;
       enableTemplate?: boolean;
       modelId?: string;
+      userId?: string;
       brandTemplateBlock?: string;
     };
 
@@ -82,16 +84,17 @@ export async function action({ request }: ActionFunctionArgs) {
         ? clientBrandTemplateBlock
         : undefined;
 
+    const resolvedUser = userId || 'anonymous';
     console.log(
-      `chat: messages=${messages.length} tokens=${totalTokens} model=${modelId || 'default'} blockChars=${brandTemplateBlock?.length ?? 0}`,
+      `chat: messages=${messages.length} tokens=${totalTokens} model=${modelId || 'default'} user=${resolvedUser} blockChars=${brandTemplateBlock?.length ?? 0}`,
     );
 
     emitMetric(
       { ChatRequest: 1, MessagesInRequest: messages.length, EstimatedTokens: totalTokens },
-      { Model: modelId || 'default' },
+      { Model: modelId || 'default', UserId: resolvedUser },
     );
 
-    const result = await streamText(messages, { modelId, brandTemplateBlock }, enableTemplate);
+    const result = await streamText(messages, { modelId, brandTemplateBlock, userId: resolvedUser }, enableTemplate);
 
     const transformStream = new TransformStream({
       transform(chunk, controller) {

@@ -1,5 +1,6 @@
 import { type ActionFunctionArgs } from '@remix-run/node';
 import { streamText } from '~/lib/.server/llm/stream-text';
+import { emitMetric } from '~/lib/.server/analytics';
 
 // Approximate token counting (1 token ≈ 4 characters for English text)
 function estimateTokens(text: string): number {
@@ -7,12 +8,14 @@ function estimateTokens(text: string): number {
 }
 
 export async function action({ request }: ActionFunctionArgs) {
-  const { message, modelId } = (await request.json()) as { message: string; modelId?: string };
+  const { message, modelId, userId } = (await request.json()) as { message: string; modelId?: string; userId?: string };
 
   try {
     // Count tokens in the prompt (approximate)
     const tokens = estimateTokens(message);
-    console.log('🎫 Enhancer prompt tokens (estimated):', tokens);
+    const resolvedUser = userId || 'anonymous';
+    console.log(`enhancer: tokens=${tokens} user=${resolvedUser}`);
+    emitMetric({ EnhancerRequest: 1 }, { UserId: resolvedUser });
 
     if (tokens > 10000) {
       return new Response(

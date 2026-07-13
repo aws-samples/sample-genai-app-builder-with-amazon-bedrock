@@ -33,7 +33,7 @@ jest.mock('@aws-sdk/client-ssm', () => ({
 
 process.env.SHARES_TABLE_NAME = 'test-shared-sites-v1';
 process.env.SHARED_SITES_BUCKET = 'test-shared-sites-bucket';
-process.env.SHARED_SITES_DOMAIN = 'https://app.example.com';
+process.env.SHARED_SITES_DOMAIN = 'https://vibe.proserve.aws.dev';
 
 // Import after mocks are set up
 import { handler } from '../../lib/shared-sites/share-lambda/index';
@@ -45,7 +45,7 @@ function makeEvent(method: string, path: string, body?: Record<string, unknown>,
     pathParameters: path.includes('/share/') ? { id: path.split('/share/')[1] } : null,
     body: body ? JSON.stringify(body) : null,
     requestContext: {
-      authorizer: { claims: { sub: userId, email: 'test@example.com' } },
+      authorizer: { claims: { sub: userId, email: 'test@amazon.com' } },
     } as any,
     headers: {},
     multiValueHeaders: {},
@@ -96,7 +96,7 @@ describe('Share Lambda', () => {
     const body = JSON.parse(result.body);
 
     expect(result.statusCode).toBe(200);
-    expect(body.url).toBe('https://app.example.com/shared/test-share-id/');
+    expect(body.url).toBe('https://vibe.proserve.aws.dev/shared/test-share-id/');
     expect(mockDdbSend).toHaveBeenCalled();
   });
 

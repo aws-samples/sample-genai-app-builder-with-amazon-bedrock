@@ -13,6 +13,11 @@ const REST_URL = 'https://rest.example.com/api';
 function setEnv() {
   (globalThis as any).window = (globalThis as any).window ?? {};
   (window as any).ENV = { API_GATEWAY_REST_URL: REST_URL };
+  // The auth-host check reads window.location.hostname; give it a public
+  // (non-Amazon) host so the client resolves the Cognito strategy in tests.
+  if (!(window as any).location) {
+    (window as any).location = { hostname: 'localhost', origin: 'http://localhost' };
+  }
 }
 
 function mockFetch(handler: (url: string, init: RequestInit) => Response | Promise<Response>) {

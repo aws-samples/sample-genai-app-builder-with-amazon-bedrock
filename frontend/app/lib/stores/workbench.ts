@@ -241,11 +241,13 @@ export class WorkbenchStore {
     }
 
     // Create the artifact with a runner first
+    const runner = new ActionRunner(this.#runtimePromise);
+    runner.onDevServerStart((cmd) => this.#previewsStore.setLastDevServerCommand(cmd));
     const artifactWithRunner = {
       id,
       title,
       closed: false,
-      runner: new ActionRunner(this.#runtimePromise),
+      runner,
     };
     
     // Add the artifact to the store
