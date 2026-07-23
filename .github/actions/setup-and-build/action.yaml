@@ -25,6 +25,13 @@ runs:
         node-version: ${{ inputs.node-version }}
         cache: pnpm
 
+    # The build reads infra/config.yml, which is gitignored (environment
+    # config is never committed). Seed it from the checked-in example so a
+    # clean CI checkout can build.
+    - name: Seed build config
+      shell: bash
+      run: cp infra/config.example.yml infra/config.yml
+
     - name: Install dependencies and build project
       shell: bash
       run: |
