@@ -1,0 +1,48 @@
+# ============================================================================
+# .gitlab-ci.yml — public mirror repo (genai-app-builder-with-amazon-bedrock)
+# ============================================================================
+# This project is the SANITIZED, public-facing copy of the app. Its only CI
+# job mirrors this repo's `main` out to the public GitHub repo under
+# aws-samples, whenever `main` updates.
+#
+# Flow: internal development happens in a separate internal repo. A sanitized
+# sync opens an MR *here*; a human reviews & merges it (the leak boundary);
+# THIS job then propagates the merged `main` to GitHub. (GitLab's native
+# push-mirror is instance-admin-only on this instance, so the push is done
+# from CI instead.)
+#
+# Required CI/CD variable (Settings > CI/CD > Variables — masked & protected):
+#   GITHUB_MIRROR_TOKEN — GitHub fine-grained PAT scoped to
+#     aws-samples/sample-genai-app-builder-with-amazon-bedrock with
+#     Contents: Read and write.
+# ============================================================================
+
+stages:
+  - mirror
+
+mirror-to-github:
+  stage: mirror
+  image: alpine:latest
+  # Only on `main` (a protected branch). Never on MRs or feature branches, so
+  # nothing reaches public GitHub without first being merged here.
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  variables:
+    GITHUB_REPO: "github.com/aws-samples/sample-genai-app-builder-with-amazon-bedrock.git"
+    # Full history: a shallow clone can't fast-forward the GitHub mirror.
+    GIT_DEPTH: 0
+  before_script:
+    - apk add --no-cache git
+  script:
+    - |
+      if [ -z "${GITHUB_MIRROR_TOKEN:-}" ]; then
+        echo "❌ GITHUB_MIRROR_TOKEN not set — add it in Settings > CI/CD > Variables (masked + protected). See file header."
+        exit 1
+      fi
+    - git config user.email "ci@amazon.com"
+    - git config user.name "Vibe Mirror Bot"
+    - echo "Mirroring $CI_COMMIT_SHA -> GitHub main ..."
+    # Plain (fast-forward) push — never forced. If main ever diverges from
+    # GitHub, this FAILS LOUDLY rather than overwriting the public repo.
+    - git push "https://x-access-token:${GITHUB_MIRROR_TOKEN}@${GITHUB_REPO}" "HEAD:refs/heads/main"
+    - echo "✅ Mirrored to https://github.com/aws-samples/sample-genai-app-builder-with-amazon-bedrock"
