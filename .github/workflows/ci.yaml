@@ -17,11 +17,15 @@ jobs:
       - name: Setup and Build
         uses: ./.github/actions/setup-and-build
 
+      # typecheck/test scripts live in frontend/package.json, not the root.
       - name: Run type check
+        working-directory: frontend
         run: pnpm run typecheck
 
       # - name: Run ESLint
+      #   working-directory: frontend
       #   run: pnpm run lint
 
       - name: Run tests
+        working-directory: frontend
         run: pnpm run test
