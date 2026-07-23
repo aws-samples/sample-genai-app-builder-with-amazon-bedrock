@@ -1,0 +1,31 @@
+# .gitlab-ci.yml — mirrors main to the public GitHub repo.
+# GITHUB_MIRROR_TOKEN (masked + protected CI var) = a GitHub PAT with
+# Contents: Read and write on the aws-samples repo.
+
+stages:
+  - mirror
+
+mirror-to-github:
+  stage: mirror
+  image: alpine:latest
+  # Only on main (a protected branch) — never on MRs or feature branches.
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  variables:
+    GITHUB_REPO: "github.com/aws-samples/sample-genai-app-builder-with-amazon-bedrock.git"
+    # Full history: a shallow clone can't fast-forward the mirror.
+    GIT_DEPTH: 0
+  before_script:
+    - apk add --no-cache git
+  script:
+    - |
+      if [ -z "${GITHUB_MIRROR_TOKEN:-}" ]; then
+        echo "❌ GITHUB_MIRROR_TOKEN not set — add it in Settings > CI/CD > Variables (masked + protected)."
+        exit 1
+      fi
+    - git config user.email "ci@amazon.com"
+    - git config user.name "Vibe Mirror Bot"
+    - echo "Mirroring $CI_COMMIT_SHA -> GitHub main ..."
+    # Plain (fast-forward) push — never forced. Fails loudly if main ever diverges.
+    - git push "https://x-access-token:${GITHUB_MIRROR_TOKEN}@${GITHUB_REPO}" "HEAD:refs/heads/main"
+    - echo "✅ Mirrored to https://github.com/aws-samples/sample-genai-app-builder-with-amazon-bedrock"
