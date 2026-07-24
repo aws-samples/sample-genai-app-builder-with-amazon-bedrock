@@ -10,7 +10,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "ws": "^8.16.0",
+    "ws": "^8.21.0",
     "chokidar": "^3.6.0",
     "node-pty": "^1.0.0",
     "fast-glob": "^3.3.2"
