@@ -846,6 +846,12 @@ The Vibe Team`,
       timeout: Duration.seconds(10),
       memorySize: 128,
       architecture: lambda.Architecture.ARM_64,
+      // The authorizer verifies every token against this user pool and app
+      // client with aws-jwt-verify; without these it denies every caller.
+      environment: {
+        COGNITO_USER_POOL_ID: userPool.userPoolId,
+        COGNITO_CLIENT_ID: userPoolClient.userPoolClientId,
+      },
     });
 
     // Request authorizer using Cognito JWT

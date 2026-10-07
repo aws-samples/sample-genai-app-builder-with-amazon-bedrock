@@ -42,6 +42,20 @@ describe('Infrastructure Validation Tests', () => {
       });
     });
 
+    test('JWT Authorizer is pinned to this stack\'s user pool and app client', () => {
+      // Without these the authorizer has nothing to verify tokens against and
+      // denies every caller.
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        FunctionName: Match.stringLikeRegexp('jwt-authorizer'),
+        Environment: {
+          Variables: Match.objectLike({
+            COGNITO_USER_POOL_ID: Match.anyValue(),
+            COGNITO_CLIENT_ID: Match.anyValue(),
+          }),
+        },
+      });
+    });
+
     test('Lambda Function URLs exist with IAM auth', () => {
       const urls = template.findResources('AWS::Lambda::Url');
       const urlCount = Object.keys(urls).length;
