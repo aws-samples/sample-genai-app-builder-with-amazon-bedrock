@@ -1,19 +1,27 @@
 import { type ActionFunctionArgs } from '@remix-run/node';
 import { streamText } from '~/lib/.server/llm/stream-text';
 import { emitMetric } from '~/lib/.server/analytics';
+import { getVerifiedCaller, unauthenticatedResponse } from '~/lib/.server/auth/caller-identity';
 
 // Approximate token counting (1 token ≈ 4 characters for English text)
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-export async function action({ request }: ActionFunctionArgs) {
+export async function action({ request, context }: ActionFunctionArgs) {
+  // Defence in depth: refuse any request without an AWS-verified caller, even
+  // if it reached the Remix Lambda through a path the gateway left public.
+  const caller = getVerifiedCaller(context);
+  if (!caller) return unauthenticatedResponse();
+
   const { message, modelId, userId } = (await request.json()) as { message: string; modelId?: string; userId?: string };
 
   try {
     // Count tokens in the prompt (approximate)
     const tokens = estimateTokens(message);
-    const resolvedUser = userId || 'anonymous';
+    // Same attribution rule as api.chat: the authorizer's `sub` wins; the body
+    // id is only a metrics label on the SigV4 Function URL path.
+    const resolvedUser = caller.via === 'function-url-iam' ? userId || caller.userId : caller.userId;
     console.log(`enhancer: tokens=${tokens} user=${resolvedUser}`);
     emitMetric({ EnhancerRequest: 1 }, { UserId: resolvedUser });
 

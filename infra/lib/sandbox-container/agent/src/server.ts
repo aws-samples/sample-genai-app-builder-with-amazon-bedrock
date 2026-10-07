@@ -19,6 +19,7 @@ import { PortDetector } from './handlers/port-detector.js';
 import { handleSystem, createReadyEvent, createErrorEvent } from './handlers/system.js';
 import { FileWatcher } from './watcher.js';
 import { RoomRegistry } from './room-registry.js';
+import { createEcsTagSessionResolver, type AssignedSessionResolver } from './assignment.js';
 
 const DEFAULT_PORT = parseInt(process.env.AGENT_PORT ?? '8080', 10);
 
@@ -27,8 +28,9 @@ function getWorkdir(): string {
 }
 
 /**
- * Clean the workdir so a recycled container starts fresh for a new session.
- * Removes all contents but preserves the directory itself.
+ * Clean the workdir. Runs when the task first binds to its session (dropping the
+ * image's seed template) and when the bound session retires. Never runs because
+ * of a connection for some other session.
  */
 function cleanWorkdir(workdir: string): void {
   try {
@@ -54,7 +56,38 @@ function extractSessionId(url: string | undefined): string | null {
   return match ? match[1] : null;
 }
 
-const RELEASE_TIMEOUT_MS = 30_000; // 30s after disconnect, release container back to warm pool
+/**
+ * After the last peer leaves, how long to wait for a reconnect before retiring the task.
+ *
+ * Only the bound session can reconnect (every other session is refused), so a
+ * longer wait costs capacity, not isolation. Ten minutes rides out a closed laptop
+ * or a network drop; the session manager's 30-minute idle reaper is the backstop.
+ */
+const RELEASE_TIMEOUT_MS = parseInt(process.env.SIDECAR_RELEASE_TIMEOUT_MS ?? '600000', 10);
+
+/**
+ * Close code for a connection whose session this task was not assigned.
+ *
+ * The client treats it as "re-sign the URL and retry", then gives up and starts
+ * a fresh session. It is never a reason for the container to change sessions.
+ */
+const NOT_ASSIGNED_CODE = 4003;
+
+export interface ServerOptions {
+  /**
+   * Resolves the session the session manager assigned this task (its
+   * `SandboxSession` ECS tag). Defaults to reading the tag for the task named by
+   * the task metadata endpoint. Returning null or throwing both refuse.
+   */
+  resolveAssignedSession?: AssignedSessionResolver;
+  /**
+   * Called once the bound session has been idle for the release window. Defaults
+   * to exiting the process: the container is essential, so ECS stops the task and
+   * the service starts a fresh one for the warm pool.
+   */
+  onRetire?: () => void;
+  releaseTimeoutMs?: number;
+}
 
 /**
  * Proxy an HTTP request to the local Vite dev server on port 5173.
@@ -139,13 +172,60 @@ function proxyUpgradeToVite(req: IncomingMessage, clientSocket: Socket, head: Bu
  * Uses an HTTP server underneath so ALB health checks (GET /) get a 200 response.
  * Also proxies /sandbox-preview/{sessionId}/* requests to the local Vite dev server.
  *
- * Session-aware: only cleans the workdir when a NEW session connects (different ID).
- * Reconnects from the same session preserve files and running processes.
+ * Single-tenant: the task binds to exactly one session for its lifetime — the
+ * one the session manager tagged it with — and refuses every other session with
+ * 4003, whether or not anyone is connected. When the bound session goes idle the
+ * task retires (exits) rather than being handed to someone else, so each tenant
+ * gets a fresh container instead of a cleaned-up one.
  */
-export function startServer(port: number = DEFAULT_PORT): WebSocketServer {
+export function startServer(port: number = DEFAULT_PORT, options: ServerOptions = {}): WebSocketServer {
+  const resolveAssignedSession = options.resolveAssignedSession ?? createEcsTagSessionResolver();
+  const onRetire = options.onRetire ?? (() => process.exit(0));
+  const releaseTimeoutMs = options.releaseTimeoutMs ?? RELEASE_TIMEOUT_MS;
+
   // ── Persistent state across reconnects ───────────────────────
-  let currentSessionId: string | null = null;
+  // Set once, by the first authorised connection, and never cleared or changed.
+  let boundSessionId: string | null = null;
+  let retired = false;
   let releaseTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Whether a connection for `sessionId` may be served.
+   *
+   * Once bound, only the bound session is. Before that, only the session the task
+   * is tagged with; an unreadable tag refuses rather than guessing.
+   */
+  async function authorise(sessionId: string): Promise<boolean> {
+    if (retired) {
+      return false;
+    }
+
+    if (boundSessionId) {
+      return sessionId === boundSessionId;
+    }
+
+    let assigned: string | null;
+    try {
+      assigned = await resolveAssignedSession();
+    } catch (err) {
+      console.error("[agent] Could not read this task's session assignment, refusing:", (err as Error).message);
+      return false;
+    }
+
+    // Re-check after the await: a concurrent connection may have bound or retired the task.
+    if (retired) {
+      return false;
+    }
+
+    if (boundSessionId) {
+      return sessionId === boundSessionId;
+    }
+
+    return assigned !== null && assigned === sessionId;
+  }
+
+  /** Authorisation decided in the upgrade handler, read by the connection handler. */
+  const authorised = new WeakMap<IncomingMessage, boolean>();
 
   const httpServer = createServer((req, res) => {
     const url = req.url ?? '/';
@@ -161,7 +241,7 @@ export function startServer(port: number = DEFAULT_PORT): WebSocketServer {
     const match = url.match(/^\/sandbox-preview\/([^/]+)(\/.*)?$/);
     if (match) {
       const requestedSession = match[1];
-      if (requestedSession !== currentSessionId) {
+      if (!boundSessionId || requestedSession !== boundSessionId) {
         // Wrong container — return retry page so ALB tries another
         res.writeHead(503, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' });
         res.end(
@@ -200,21 +280,32 @@ export function startServer(port: number = DEFAULT_PORT): WebSocketServer {
     if (previewMatch) {
       // Only proxy to Vite for the session this container is actually serving;
       // otherwise close so the client retries and ALB re-routes it.
-      if (previewMatch[1] === currentSessionId) {
+      if (boundSessionId && previewMatch[1] === boundSessionId) {
         proxyUpgradeToVite(req, socket as Socket, head);
       } else {
         console.warn(
           `[agent] HMR upgrade for session=${previewMatch[1]} but container serves ` +
-            `session=${currentSessionId ?? 'none'} — closing so ALB re-routes`,
+            `session=${boundSessionId ?? 'none'} — closing`,
         );
         socket.destroy();
       }
       return;
     }
 
-    // Everything else is the agent protocol.
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit('connection', ws, req);
+    // Everything else is the agent protocol. The URL is deliberately never
+    // logged: it carries the CloudFront signature, which is a bearer credential.
+    const sessionId = extractSessionId(req.url);
+    const decision = sessionId ? authorise(sessionId) : Promise.resolve(false);
+
+    void decision.then((ok) => {
+      if (socket.destroyed) {
+        return;
+      }
+
+      authorised.set(req, ok);
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit('connection', ws, req);
+      });
     });
   });
 
@@ -232,17 +323,31 @@ export function startServer(port: number = DEFAULT_PORT): WebSocketServer {
   wss.on('connection', (ws: WebSocket, req) => {
     const sessionId = extractSessionId(req.url);
 
-    // Cancel any pending release timer (reconnect or new session)
-    if (releaseTimer) {
-      clearTimeout(releaseTimer);
-      releaseTimer = null;
-    }
-
     // Ignore connections without a valid session ID (e.g. ALB probes, stray requests)
     if (!sessionId) {
       console.log('[agent] Ignoring connection with no session ID');
       ws.close(4000, 'No session ID');
       return;
+    }
+
+    // Refuse every session but the one this task is bound (or assigned) to.
+    //
+    // This holds whether or not anyone is connected: a refused connection never
+    // reaches the branch below that cleans the workdir, so it cannot adopt the
+    // task and wipe a previous user's work. Nor does it touch the release timer.
+    if (authorised.get(req) !== true) {
+      console.warn(
+        `[agent] Refusing session=${sessionId}: task is bound to session=${boundSessionId ?? 'none'}` +
+          (retired ? ' (retired)' : ''),
+      );
+      ws.close(NOT_ASSIGNED_CODE, 'Not assigned');
+      return;
+    }
+
+    // Cancel any pending release timer — the bound session reconnected.
+    if (releaseTimer) {
+      clearTimeout(releaseTimer);
+      releaseTimer = null;
     }
 
     // Authorisation happens before the request gets here, in AWS-managed
@@ -251,30 +356,12 @@ export function startServer(port: number = DEFAULT_PORT): WebSocketServer {
     // member), and the ALB forwards only requests carrying CloudFront's
     // origin-verify header. This container accepts traffic only from the ALB.
 
-    const isNewSession = sessionId !== currentSessionId;
-
-    // Refuse a foreign session while this container is still serving live peers.
-    //
-    // Adopting it would run the destructive branch below (clean the workdir, kill
-    // the dev server) out from under people who are actively editing. That is
-    // reachable in practice: `/ws/*` is load-balanced across the whole warm pool,
-    // so a connection for session X can land on the container serving session Y.
-    // Closing is recoverable — the client retries and the routing layer sends it
-    // to the right container — whereas a wipe destroys someone else's work.
-    if (isNewSession && currentSessionId && rooms.peerCount(currentSessionId) > 0) {
-      console.log(
-        `[agent] Refusing session=${sessionId}: container is serving session=${currentSessionId} ` +
-          `with ${rooms.peerCount(currentSessionId)} live peer(s)`,
-      );
-      ws.close(4001, 'Wrong container');
-      return;
-    }
+    // The first authorised connection binds the task, permanently.
+    const isNewSession = boundSessionId === null;
 
     // Register this socket as a collaborator in its session's room. Peers who
     // present the SAME session ID are co-editors of the same project (invited
-    // via the app's membership layer), so they are treated as reconnects, not
-    // as a foreign session — the workdir wipe below only fires for a genuinely
-    // different session ID.
+    // via the app's membership layer), so they are treated as reconnects.
     rooms.join(sessionId, ws);
 
     console.log(
@@ -309,30 +396,11 @@ export function startServer(port: number = DEFAULT_PORT): WebSocketServer {
     const workdir = getWorkdir();
 
     if (isNewSession) {
-      // New session — kill old processes and clean workdir
-      if (persistentShellManager) {
-        persistentShellManager.destroyAll();
-      }
-      if (persistentPortDetector) {
-        persistentPortDetector.stop();
-      }
-      if (persistentFileWatcher) {
-        persistentFileWatcher.stop();
-        persistentFileWatcher = null;
-      }
-      // Nuclear cleanup: kill any orphaned dev servers that survived destroyAll().
-      // Only run if there was a previous session (avoids killing unrelated processes
-      // on first connection). Pattern excludes "vitest" to avoid killing test runners.
-      if (currentSessionId) {
-        try {
-          execSync('pkill -9 -f "vite serve|vite dev|next dev" || true', { stdio: 'ignore' });
-          execSync('lsof -t -i:5173 -i:3000 -i:3001 -sTCP:LISTEN | xargs kill -9 2>/dev/null || true', { stdio: 'ignore' });
-        } catch {
-          // Best effort — process may not exist
-        }
-      }
+      // First bind of a fresh task: nobody's work is here yet, only the image's
+      // seed, so starting from an empty workdir is safe.
+      console.log(`[agent] Binding task to session=${sessionId} for its lifetime`);
       cleanWorkdir(workdir);
-      currentSessionId = sessionId;
+      boundSessionId = sessionId;
 
       // Set session-aware base path so Vite serves assets at
       // /sandbox-preview/{sessionId}/ — asset URLs route back through
@@ -483,14 +551,18 @@ export function startServer(port: number = DEFAULT_PORT): WebSocketServer {
         return;
       }
 
-      // Start release timer — if no reconnect within 30s, release container
+      // Start release timer — if no reconnect within the window, retire the task.
       // Clear any existing timer first to prevent orphaned timers when
       // multiple WebSocket connections disconnect simultaneously.
       if (releaseTimer) {
         clearTimeout(releaseTimer);
       }
       releaseTimer = setTimeout(() => {
-        console.log(`[agent] Release timeout — returning container to warm pool (was session ${currentSessionId})`);
+        // Retire, never release: the binding is kept so no other session can ever
+        // be served here, and the task exits so ECS replaces it with a fresh one.
+        retired = true;
+        releaseTimer = null;
+        console.log(`[agent] Release timeout — retiring task (bound to session ${boundSessionId})`);
         if (persistentShellManager) {
           persistentShellManager.destroyAll();
           persistentShellManager = null;
@@ -508,9 +580,8 @@ export function startServer(port: number = DEFAULT_PORT): WebSocketServer {
           execSync('lsof -t -i:5173 -i:3000 -i:3001 -sTCP:LISTEN | xargs kill -9 2>/dev/null || true', { stdio: 'ignore' });
         } catch { /* best effort */ }
         cleanWorkdir(getWorkdir());
-        currentSessionId = null;
-        releaseTimer = null;
-      }, RELEASE_TIMEOUT_MS);
+        onRetire();
+      }, releaseTimeoutMs);
     });
 
     ws.on('error', (err) => {

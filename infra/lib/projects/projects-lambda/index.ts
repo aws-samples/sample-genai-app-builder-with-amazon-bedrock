@@ -4,17 +4,21 @@ import {
   addProjectMember,
   createProject,
   deleteProject,
+  getProjectMember,
   getProjectMessages,
   getProjectMeta,
-  getProjectMetaByUrlId,
+  getProjectMetasByUrlId,
   isProjectMember,
   listProjectMembers,
   listProjectsByOwner,
   newProjectMeta,
   putProjectMessages,
+  releaseUrlIdClaim,
   removeProjectMember,
   touchProject,
   updateProjectMeta,
+  URLID_CLAIM_PREFIX,
+  UrlIdTakenError,
   WriteThrottledError,
 } from './projects';
 import type {
@@ -181,39 +185,88 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
   }
 }
 
+type Resolution = { meta: ProjectMeta } | { error: ApiResponse };
+
+const byCreatedAt = (a: ProjectMeta, b: ProjectMeta) => (a.createdAt ?? 0) - (b.createdAt ?? 0);
+
 /**
- * Resolve the id in the path to a project.
+ * Resolve the id in the path to a project the caller may act on.
  *
  * Chat URLs route on the human-readable `urlId`, so the same path segment can be
- * either that or the projectId; the direct read is tried first because it is the
- * cheaper of the two.
- */
-async function resolveProject(requestedId: string): Promise<ProjectMeta | null> {
-  return (await getProjectMeta(requestedId)) ?? (await getProjectMetaByUrlId(requestedId));
-}
-
-/**
- * Load a project and check the caller may act on it.
+ * either that or a projectId. Neither is unique across users (the projectId is
+ * client-supplied, and a urlId is only unique per owner), so the first match is
+ * not safe to use: another user could create a project whose id or slug
+ * collides with the caller's and capture their reads and writes. Resolution is
+ * therefore scoped to the caller:
  *
- * Returns the failure response rather than throwing so each route stays a
- * straight line, and fails closed: an unresolvable project is a 404 and a
- * non-member is a 403, never an implicit pass.
+ *   1. A project the caller owns always wins (the direct id first).
+ *   2. Otherwise, a single project the caller is a member of.
+ *   3. Several such projects is refused with 409 rather than guessed at, since
+ *      any owner can add the caller to a look-alike project.
+ *   4. A match the caller has no access to is 403; no match at all is 404.
+ *
+ * Fails closed: it never returns a project the caller neither owns nor belongs
+ * to. Routes that need ownership check `meta.ownerId` on the result.
  */
-async function requireMember(
-  requestedId: string,
-  userId: string,
-): Promise<{ meta: ProjectMeta } | { error: ApiResponse }> {
-  const meta = await resolveProject(requestedId);
+async function resolveProject(requestedId: string, userId: string): Promise<Resolution> {
+  const direct = await getProjectMeta(requestedId);
 
-  if (!meta) {
+  if (direct && direct.ownerId === userId) {
+    return { meta: direct };
+  }
+
+  const candidates = new Map<string, ProjectMeta>();
+  for (const meta of [direct, ...(await getProjectMetasByUrlId(requestedId))]) {
+    if (meta && !candidates.has(meta.projectId)) {
+      candidates.set(meta.projectId, meta);
+    }
+  }
+
+  if (candidates.size === 0) {
     return { error: response(404, { error: 'Project not found' }) };
   }
 
-  if (!(await isProjectMember(meta, userId))) {
+  const owned = [...candidates.values()].filter((meta) => meta.ownerId === userId).sort(byCreatedAt);
+
+  if (owned.length > 0) {
+    return { meta: owned[0] };
+  }
+
+  const accessible: ProjectMeta[] = [];
+  for (const meta of candidates.values()) {
+    if (await getProjectMember(meta.projectId, userId)) {
+      accessible.push(meta);
+    }
+  }
+
+  if (accessible.length === 1) {
+    return { meta: accessible[0] };
+  }
+
+  if (accessible.length > 1) {
+    return { error: response(409, { error: 'Ambiguous project reference; use the project id' }) };
+  }
+
+  return { error: response(403, { error: 'Forbidden' }) };
+}
+
+/**
+ * Load a project the caller may read and write. Alias of {@link resolveProject},
+ * kept so member-level routes read as such.
+ */
+async function requireMember(requestedId: string, userId: string): Promise<Resolution> {
+  return resolveProject(requestedId, userId);
+}
+
+/** Load a project the caller owns: 404/403/409 as for resolution, 403 if not theirs. */
+async function requireOwner(requestedId: string, userId: string): Promise<Resolution> {
+  const resolved = await resolveProject(requestedId, userId);
+
+  if ('meta' in resolved && resolved.meta.ownerId !== userId) {
     return { error: response(403, { error: 'Forbidden' }) };
   }
 
-  return { meta };
+  return resolved;
 }
 
 async function handleListProjects(userId: string): Promise<ApiResponse> {
@@ -238,11 +291,22 @@ async function handleCreateProject(
   // The client may supply the id: projects that already exist in a browser's
   // local history have to keep the id their URLs and workbench state refer to.
   const projectId = typeof body.id === 'string' && body.id.length > 0 ? body.id : crypto.randomUUID();
+
+  // Claim items live under this prefix; a project sharing that partition could
+  // delete a claim along with itself.
+  if (projectId.startsWith(URLID_CLAIM_PREFIX)) {
+    return response(400, { error: 'Invalid project id' });
+  }
+
   const meta = newProjectMeta(userId, projectId, body.urlId, body.description);
 
   try {
     await createProject(meta);
   } catch (err) {
+    if (err instanceof UrlIdTakenError) {
+      return response(409, { error: err.message });
+    }
+
     // The id is taken. Migration re-sends projects it may have sent before, so
     // this is a normal outcome — but it must not hand the partition to whoever
     // asks for the id second.
@@ -337,17 +401,13 @@ async function handleAddMember(
     return response(400, { error: 'userId is required' });
   }
 
-  const meta = await resolveProject(requestedId);
+  const resolved = await requireOwner(requestedId, userId);
 
-  if (!meta) {
-    return response(404, { error: 'Project not found' });
+  if ('error' in resolved) {
+    return resolved.error;
   }
 
-  if (meta.ownerId !== userId) {
-    return response(403, { error: 'Forbidden' });
-  }
-
-  await addProjectMember(meta.projectId, body.userId);
+  await addProjectMember(resolved.meta.projectId, body.userId);
 
   return response(200, { ok: true });
 }
@@ -390,12 +450,13 @@ async function handleRemoveMember(
   memberId: string,
   userId: string,
 ): Promise<ApiResponse> {
-  const meta = await resolveProject(requestedId);
+  const resolved = await resolveProject(requestedId, userId);
 
-  if (!meta) {
-    return response(404, { error: 'Project not found' });
+  if ('error' in resolved) {
+    return resolved.error;
   }
 
+  const { meta } = resolved;
   const targetUserId = memberId === 'me' ? userId : memberId;
   const isOwner = meta.ownerId === userId;
 
@@ -437,20 +498,30 @@ async function handleUpdateProject(
     return response(400, { error: 'description or urlId is required' });
   }
 
-  const meta = await resolveProject(requestedId);
+  const resolved = await requireOwner(requestedId, userId);
 
-  if (!meta) {
-    return response(404, { error: 'Project not found' });
+  if ('error' in resolved) {
+    return resolved.error;
   }
 
-  if (meta.ownerId !== userId) {
-    return response(403, { error: 'Forbidden' });
-  }
+  const { meta } = resolved;
 
   // The slug is settled by whoever created the project and is what a URL routes
   // on, so it is written once and never reassigned — a later change would strand
-  // every link already shared, including a collaborator's open tab.
-  await updateProjectMeta(meta.projectId, { description, urlId: meta.urlId ? undefined : urlId });
+  // every link already shared, including a collaborator's open tab. Setting it
+  // also reserves it among the owner's projects.
+  try {
+    await updateProjectMeta(
+      meta.projectId,
+      { description, urlId: meta.urlId ? undefined : urlId },
+      meta.ownerId,
+    );
+  } catch (err) {
+    if (err instanceof UrlIdTakenError) {
+      return response(409, { error: err.message });
+    }
+    throw err;
+  }
 
   return response(200, { ok: true });
 }
@@ -460,17 +531,21 @@ async function handleUpdateProject(
  * project and every message in it.
  */
 async function handleDeleteProject(requestedId: string, userId: string): Promise<ApiResponse> {
-  const meta = await resolveProject(requestedId);
+  const resolved = await requireOwner(requestedId, userId);
 
-  if (!meta) {
-    return response(404, { error: 'Project not found' });
+  if ('error' in resolved) {
+    return resolved.error;
   }
 
-  if (meta.ownerId !== userId) {
-    return response(403, { error: 'Forbidden' });
-  }
+  const { meta } = resolved;
 
   await deleteProject(meta.projectId);
+
+  // Free the slug for the owner's next project. Conditional on the claim still
+  // pointing here, so it never releases one another project holds.
+  if (meta.urlId) {
+    await releaseUrlIdClaim(meta.ownerId, meta.urlId, meta.projectId);
+  }
 
   return response(200, { ok: true });
 }

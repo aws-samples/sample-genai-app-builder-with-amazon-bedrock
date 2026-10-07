@@ -183,3 +183,164 @@ describe('Share Lambda', () => {
     expect(result.statusCode).toBe(405);
   });
 });
+
+/**
+ * Sev2 security review: a caller must not be able to claim, overwrite or delete
+ * a shared site that belongs to someone else.
+ */
+describe('Share Lambda — Sev2 ownership', () => {
+  const conditionalFailure = () => Object.assign(new Error('The conditional request failed'), {
+    name: 'ConditionalCheckFailedException',
+  });
+
+  /**
+   * In-memory shares table that evaluates the ownership conditions the way
+   * DynamoDB would, so a test fails if the write is unconditional.
+   */
+  function table(initial: Record<string, any> = {}) {
+    const items: Record<string, any> = { ...initial };
+    const writes: any[] = [];
+
+    mockDdbSend.mockImplementation(async (cmd: any) => {
+      const { input, _type } = cmd;
+      const id = input.Key?.shareId ?? input.Item?.shareId;
+      const existing = items[id];
+      const values = input.ExpressionAttributeValues ?? {};
+      const condition: string = input.ConditionExpression ?? '';
+
+      const conditionHolds = () => {
+        if (condition.includes('attribute_not_exists(shareId)') && existing) return false;
+        if (condition.includes('attribute_exists(shareId)') && !existing) return false;
+        if (condition.includes('userId = :uid') && existing?.userId !== values[':uid']) return false;
+        return true;
+      };
+
+      if (_type === 'GetCommand') return { Item: existing };
+      if (_type === 'QueryCommand') {
+        return { Items: Object.values(items).filter((i: any) => i.userId === values[':uid']) };
+      }
+
+      if (_type === 'PutCommand' || _type === 'DeleteCommand') {
+        if (!conditionHolds()) throw conditionalFailure();
+        writes.push(cmd);
+        if (_type === 'PutCommand') items[id] = input.Item;
+        else delete items[id];
+        return {};
+      }
+      return {};
+    });
+
+    return { items, writes };
+  }
+
+  const victimShare = {
+    shareId: 'victim-share',
+    userId: 'victim',
+    title: 'Victim site',
+    s3Prefix: 'shared/victim-share/',
+    status: 'active',
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('confirm cannot claim a share id that belongs to another user', async () => {
+    const db = table({ 'victim-share': victimShare });
+
+    const result = await handler(
+      makeEvent('POST', '/share', { action: 'confirm', shareId: 'victim-share', title: 'pwned' }, 'attacker'),
+    );
+
+    expect([403, 404]).toContain(result.statusCode);
+    expect(db.items['victim-share']).toEqual(victimShare);
+  });
+
+  test('confirm cannot claim a share id nobody reserved', async () => {
+    const db = table();
+
+    const result = await handler(
+      makeEvent('POST', '/share', { action: 'confirm', shareId: 'made-up', title: 'x' }, 'attacker'),
+    );
+
+    expect([403, 404]).toContain(result.statusCode);
+    expect(db.items['made-up']).toBeUndefined();
+  });
+
+  test('create reserves the new share id for the caller, conditionally', async () => {
+    const db = table();
+
+    const result = await handler(makeEvent('POST', '/share', { title: 't', files: ['index.html'] }, 'alice'));
+    const { shareId } = JSON.parse(result.body);
+
+    expect(result.statusCode).toBe(200);
+    expect(db.items[shareId]?.userId).toBe('alice');
+    const put = db.writes.find((w) => w._type === 'PutCommand');
+    expect(put.input.ConditionExpression).toContain('attribute_not_exists(shareId)');
+  });
+
+  test('the owner can confirm the share they reserved', async () => {
+    const db = table();
+
+    const created = await handler(makeEvent('POST', '/share', { title: 't', files: ['index.html'] }, 'alice'));
+    const { shareId } = JSON.parse(created.body);
+    const confirmed = await handler(makeEvent('POST', '/share', { action: 'confirm', shareId, title: 'Mine' }, 'alice'));
+
+    expect(confirmed.statusCode).toBe(200);
+    expect(db.items[shareId]).toMatchObject({ userId: 'alice', title: 'Mine', status: 'active' });
+  });
+
+  test('another user cannot confirm a share reserved by someone else', async () => {
+    const db = table();
+
+    const created = await handler(makeEvent('POST', '/share', { title: 't', files: ['index.html'] }, 'alice'));
+    const { shareId } = JSON.parse(created.body);
+    const result = await handler(makeEvent('POST', '/share', { action: 'confirm', shareId, title: 'x' }, 'mallory'));
+
+    expect([403, 404]).toContain(result.statusCode);
+    expect(db.items[shareId].userId).toBe('alice');
+  });
+
+  test('delete by a non-owner changes nothing in DynamoDB or S3', async () => {
+    const db = table({ 'victim-share': victimShare });
+
+    const result = await handler(makeEvent('DELETE', '/share/victim-share', undefined, 'attacker'));
+
+    expect(result.statusCode).toBe(403);
+    expect(db.items['victim-share']).toEqual(victimShare);
+    expect(mockS3Send).not.toHaveBeenCalled();
+  });
+
+  test('the record delete is itself conditional on ownership', async () => {
+    const db = table({ 'mine': { ...victimShare, shareId: 'mine', userId: 'alice', s3Prefix: 'shared/mine/' } });
+    mockS3Send.mockResolvedValueOnce({ Contents: [] });
+
+    const result = await handler(makeEvent('DELETE', '/share/mine', undefined, 'alice'));
+
+    expect(result.statusCode).toBe(200);
+    const del = db.writes.find((w) => w._type === 'DeleteCommand');
+    expect(del.input.ConditionExpression).toContain('userId = :uid');
+  });
+
+  test('a request with no authenticated identity is refused, not filed under a shared "unknown" user', async () => {
+    const db = table({ 'unknown-share': { ...victimShare, shareId: 'unknown-share', userId: 'unknown' } });
+    const event = makeEvent('DELETE', '/share/unknown-share');
+    (event.requestContext as any).authorizer = {};
+
+    const result = await handler(event);
+
+    expect(result.statusCode).toBe(401);
+    expect(db.items['unknown-share']).toBeDefined();
+  });
+
+  test('upload paths cannot escape the share prefix', async () => {
+    table();
+
+    const result = await handler(
+      makeEvent('POST', '/share', { title: 't', files: ['../victim-share/index.html'] }, 'attacker'),
+    );
+
+    expect(result.statusCode).toBe(400);
+    expect(PutObjectCommand as unknown as jest.Mock).not.toHaveBeenCalled();
+  });
+});

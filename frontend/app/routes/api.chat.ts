@@ -2,6 +2,7 @@ import { type ActionFunctionArgs } from '@remix-run/node';
 import { streamText, type Messages } from '~/lib/.server/llm/stream-text';
 import { emitMetric } from '~/lib/.server/analytics';
 import { withKeepAlive } from '~/lib/.server/llm/stream-keepalive';
+import { getVerifiedCaller, unauthenticatedResponse } from '~/lib/.server/auth/caller-identity';
 
 // Token estimator: ~4 chars per token for text; an inlined image contributes
 // ~1500 tokens to Claude vision regardless of payload size. Reference images
@@ -34,19 +35,23 @@ function jsonError(status: number, error: string, details?: string) {
   );
 }
 
-export async function action({ request }: ActionFunctionArgs) {
+export async function action({ request, context }: ActionFunctionArgs) {
   try {
+    // Defence in depth: the gateway should already have authenticated this
+    // call, but the Remix Lambda has a public SSR entry path too, so the
+    // route itself refuses any request without an AWS-verified caller.
+    const caller = getVerifiedCaller(context);
+    if (!caller) return unauthenticatedResponse();
+
     if (request.method !== 'POST') return jsonError(405, 'Method not allowed');
     const contentType = request.headers.get('Content-Type');
     if (!contentType || !contentType.includes('application/json')) {
       return jsonError(400, 'Invalid content type');
     }
 
-    // The streaming Function URL is gated by AWS_IAM (SigV4) — only callers
-    // holding the Cognito-authorized identity-pool role can reach this
-    // Lambda at all. The brand-template block arrives as opaque pre-rendered
-    // text the client splices into its own system prompt, so there is no
-    // server-side cross-user access to defend against here.
+    // The brand-template block arrives as opaque pre-rendered text the client
+    // splices into its own system prompt, so there is no server-side
+    // cross-user access to defend against here.
     const {
       messages,
       enableTemplate,
@@ -85,7 +90,11 @@ export async function action({ request }: ActionFunctionArgs) {
         ? clientBrandTemplateBlock
         : undefined;
 
-    const resolvedUser = userId || 'anonymous';
+    // The authorizer's `sub` is authoritative. On the SigV4 Function URL path
+    // the verified identity is a Cognito identity id rather than the `sub`
+    // analytics joins on, so the body's userId is kept there purely as a
+    // metrics label; access was already decided by `caller` above.
+    const resolvedUser = caller.via === 'function-url-iam' ? userId || caller.userId : caller.userId;
     console.log(
       `chat: messages=${messages.length} tokens=${totalTokens} model=${modelId || 'default'} user=${resolvedUser} blockChars=${brandTemplateBlock?.length ?? 0}`,
     );

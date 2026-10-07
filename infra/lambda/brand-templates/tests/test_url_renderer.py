@@ -191,12 +191,23 @@ def test_fetch_favicon_and_og_falls_back_to_favicon(requests_mock):
     html = "<html><head></head><body></body></html>"
     requests_mock.get(
         "https://example.com/favicon.ico",
-        content=b"\x00\x00\x01\x00" + b"x" * 10,
-        headers={"Content-Type": "image/vnd.microsoft.icon"},
+        content=b"\x89PNG\r\n\x1a\n" + b"x" * 10,
+        headers={"Content-Type": "image/png"},
     )
     img = _renderer().fetch_favicon_and_og(html, "https://example.com/")
     assert img is not None
-    assert img.startswith(b"\x00\x00\x01\x00")
+    assert img.startswith(b"\x89PNG")
+
+
+def test_fetch_favicon_and_og_skips_ico_container(requests_mock):
+    # ICO is deliberately not in the raster allowlist (see fetch_favicon_and_og).
+    html = "<html><head></head><body></body></html>"
+    requests_mock.get(
+        "https://example.com/favicon.ico",
+        content=b"\x00\x00\x01\x00" + b"x" * 10,
+        headers={"Content-Type": "image/vnd.microsoft.icon"},
+    )
+    assert _renderer().fetch_favicon_and_og(html, "https://example.com/") is None
 
 
 def test_fetch_favicon_and_og_returns_none_when_nothing_reachable(requests_mock):

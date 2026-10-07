@@ -18,6 +18,11 @@ export interface SandboxEcrRebuildProps {
   cluster: ecs.ICluster;
   service: ecs.FargateService;
   /**
+   * The sandbox task definition. Its task and execution roles are the only
+   * roles the build may pass when it registers the patched revision.
+   */
+  taskDefinition: ecs.TaskDefinition;
+  /**
    * Email address(es) notified when the weekly patch build fails. Without this
    * the build can fail silently and containers drift out of SLA (the exact
    * failure mode this construct exists to prevent). Accepts a single address or
@@ -40,7 +45,7 @@ export class SandboxEcrRebuild extends Construct {
   constructor(scope: Construct, id: string, props: SandboxEcrRebuildProps) {
     super(scope, id);
 
-    const { stackPrefix, cluster, service, alarmEmail } = props;
+    const { stackPrefix, cluster, service, taskDefinition, alarmEmail } = props;
     const account = cdk.Stack.of(this).account;
     const region = cdk.Stack.of(this).region;
 
@@ -141,20 +146,26 @@ export class SandboxEcrRebuild extends Construct {
       resources: ['*'],
     }));
 
+    // Roll only the sandbox service.
     this.buildProject.addToRolePolicy(new iam.PolicyStatement({
-      actions: [
-        'ecs:UpdateService',
-        'ecs:DescribeServices',
-        'ecs:DescribeTaskDefinition',
-        'ecs:RegisterTaskDefinition',
-      ],
+      actions: ['ecs:UpdateService', 'ecs:DescribeServices'],
+      resources: [service.serviceArn],
+    }));
+
+    // DescribeTaskDefinition and RegisterTaskDefinition do not support
+    // resource-level permissions, so they cannot be narrowed below '*'. What
+    // the new revision can do is bounded by the PassRole grant below.
+    this.buildProject.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ecs:DescribeTaskDefinition', 'ecs:RegisterTaskDefinition'],
       resources: ['*'],
     }));
 
-    // The new task definition needs the execution role to pull from the patch repo
+    // Registering the revision passes the task's own roles back to ECS. Only
+    // those two may be passed, so the build cannot hand a more privileged role
+    // to a task.
     this.buildProject.addToRolePolicy(new iam.PolicyStatement({
       actions: ['iam:PassRole'],
-      resources: ['*'],
+      resources: [taskDefinition.taskRole.roleArn, taskDefinition.obtainExecutionRole().roleArn],
       conditions: {
         StringEquals: { 'iam:PassedToService': 'ecs-tasks.amazonaws.com' },
       },

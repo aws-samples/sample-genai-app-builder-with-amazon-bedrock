@@ -39,7 +39,7 @@ describe('SandboxVpc', () => {
   test('creates CloudWatch log group for flow logs', () => {
     template.hasResourceProperties('AWS::Logs::LogGroup', {
       LogGroupName: '/aws/vpc/test-sandbox-vpc/flow-logs',
-      RetentionInDays: 30,
+      RetentionInDays: 365,
     });
   });
 });

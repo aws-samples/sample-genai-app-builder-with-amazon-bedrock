@@ -1,6 +1,12 @@
 import type { APIGatewayRequestAuthorizerEvent, APIGatewayAuthorizerResult } from 'aws-lambda';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 
+// PUBLIC RELEASE AUTHORIZER. scripts/publish-to-public.sh copies this file to
+// frontend/lambda-authorizer/index.ts in the public repo; the internal build
+// uses index.ts next to it (Cognito + internal SSO). Keep the token checks of
+// the two identical: the publish gate runs the same security-parity suite
+// against both (scripts/security-parity/) and refuses to publish on any gap.
+
 /**
  * API Gateway REQUEST authorizer for the Cognito user pool.
  *
@@ -68,7 +74,9 @@ export const handler = async (event: APIGatewayRequestAuthorizerEvent): Promise<
 
   const sub = typeof payload.sub === 'string' ? payload.sub : '';
 
-  if (!sub) {
+  // The library rejects an expired token but accepts one with no `exp` at all;
+  // a bearer credential that never expires is not one we accept.
+  if (!sub || typeof payload.exp !== 'number') {
     return generatePolicy('anonymous', 'Deny', event.methodArn);
   }
 

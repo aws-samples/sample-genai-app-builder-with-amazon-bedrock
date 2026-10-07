@@ -1,10 +1,10 @@
 /**
  * Per-session ALB routing.
  *
- * These cover the pure naming rule and the fail-soft contract. The AWS calls
- * themselves are mocked: what matters is that a routing failure never breaks
- * session creation, because a session with no rule of its own still works via
- * the static catch-all route.
+ * These cover the pure naming rule, the no-throw contract and leak prevention.
+ * The AWS calls themselves are mocked. A routing failure returns null rather
+ * than throwing; the caller treats null as fatal for the session, because there
+ * is no shared fallback route (it would land on another tenant's container).
  */
 const mockElbSend = jest.fn();
 
@@ -20,6 +20,7 @@ jest.mock('@aws-sdk/client-elastic-load-balancing-v2', () => ({
   DescribeRulesCommand: jest.fn().mockImplementation((input) => ({ input, _type: 'DescribeRules' })),
   DescribeTargetGroupsCommand: jest.fn().mockImplementation((input) => ({ input, _type: 'DescribeTargetGroups' })),
   DescribeTargetHealthCommand: jest.fn().mockImplementation((input) => ({ input, _type: 'DescribeTargetHealth' })),
+  DescribeTagsCommand: jest.fn().mockImplementation((input) => ({ input, _type: 'DescribeTags' })),
   RegisterTargetsCommand: jest.fn().mockImplementation((input) => ({ input, _type: 'RegisterTargets' })),
 }));
 
@@ -40,37 +41,10 @@ import {
   sessionTargetGroupName,
   provisionSessionRouting,
   teardownSessionRouting,
-  taskIpFromContainerId,
+  reconcileOrphanRouting,
 } from '../../lib/sandbox/session-manager-lambda/alb-routing';
 
 const SESSION = '3f2a9c1e-7b44-4d8a-9f10-2c6e5b8d1a37';
-
-/**
- * The container is the authority on which box is serving a session — claiming a
- * warm task never tells the container about it — so its reported hostname is
- * translated back into the address the load balancer targets.
- */
-describe('taskIpFromContainerId', () => {
-  it('reads the task ip out of an awsvpc hostname', () => {
-    expect(taskIpFromContainerId('ip-10-10-2-155.us-west-2.compute.internal')).toBe('10.10.2.155');
-  });
-
-  it('handles single-digit octets', () => {
-    expect(taskIpFromContainerId('ip-10-0-1-7.eu-west-1.compute.internal')).toBe('10.0.1.7');
-  });
-
-  it('returns null for a hostname that is not in that form', () => {
-    expect(taskIpFromContainerId('unknown')).toBeNull();
-    expect(taskIpFromContainerId('some-container-abc123')).toBeNull();
-    expect(taskIpFromContainerId(undefined)).toBeNull();
-    expect(taskIpFromContainerId('')).toBeNull();
-  });
-
-  it('rejects octets outside the valid range rather than pinning a bogus address', () => {
-    expect(taskIpFromContainerId('ip-10-10-2-999.us-west-2.compute.internal')).toBeNull();
-    expect(taskIpFromContainerId('ip-300-1-1-1.us-west-2.compute.internal')).toBeNull();
-  });
-});
 
 describe('sessionTargetGroupName', () => {
   it('fits inside the 32-character ELBv2 limit', () => {
@@ -181,7 +155,7 @@ describe('provisionSessionRouting', () => {
     expect(result?.ruleArn).toBe('arn:rule/second-try');
   });
 
-  it('returns null instead of throwing when AWS fails, so session creation survives', async () => {
+  it('returns null instead of throwing when AWS fails, so the caller can fail the claim cleanly', async () => {
     mockElbSend.mockImplementation(() => {
       throw new Error('AccessDenied');
     });
@@ -352,5 +326,206 @@ describe('teardownSessionRouting', () => {
     });
 
     await expect(teardownSessionRouting(SESSION)).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * Rule-leak fixes (prod hit the 100-rule listener quota and sessions fell
+ * through to the shared route).
+ */
+describe('routing leak prevention', () => {
+  beforeEach(() => {
+    mockElbSend.mockReset();
+  });
+
+  it('teardown follows DescribeRules pagination to find a rule on a later page', async () => {
+    const deleted: string[] = [];
+    mockElbSend.mockImplementation((cmd: any) => {
+      switch (cmd._type) {
+        case 'DescribeRules':
+          if (!cmd.input.Marker) {
+            return {
+              Rules: [{ RuleArn: 'arn:rule/other', Conditions: [{ HttpHeaderConfig: { Values: ['someone-else'] } }] }],
+              NextMarker: 'page-2',
+            };
+          }
+          return { Rules: [{ RuleArn: 'arn:rule/session', Conditions: [{ HttpHeaderConfig: { Values: [SESSION] } }] }] };
+        case 'DeleteRule':
+          deleted.push(cmd.input.RuleArn);
+          return {};
+        case 'DescribeTargetGroups':
+          return { TargetGroups: [{ TargetGroupArn: 'arn:tg/session' }] };
+        default:
+          return {};
+      }
+    });
+
+    await teardownSessionRouting(SESSION);
+
+    expect(deleted).toEqual(['arn:rule/session']);
+  });
+
+  it('deletes the target group it created when CreateRule fails', async () => {
+    const calls: string[] = [];
+    mockElbSend.mockImplementation((cmd: any) => {
+      calls.push(cmd._type);
+      switch (cmd._type) {
+        case 'DescribeTargetGroups':
+          throw Object.assign(new Error('not found'), { name: 'TargetGroupNotFoundException' });
+        case 'CreateTargetGroup':
+          return { TargetGroups: [{ TargetGroupArn: 'arn:tg/session' }] };
+        case 'DescribeRules':
+          return { Rules: [] };
+        case 'CreateRule':
+          throw Object.assign(new Error('quota'), { name: 'TooManyRules' });
+        default:
+          return {};
+      }
+    });
+
+    await expect(provisionSessionRouting(SESSION, '10.10.2.155')).resolves.toBeNull();
+    expect(calls).toContain('DeleteTargetGroup');
+  });
+
+  it('deletes the target group when no rule priority is free', async () => {
+    const calls: string[] = [];
+    const full = Array.from({ length: 701 }, (_, i) => ({ Priority: String(100 + i) }));
+    mockElbSend.mockImplementation((cmd: any) => {
+      calls.push(cmd._type);
+      switch (cmd._type) {
+        case 'DescribeTargetGroups':
+          return { TargetGroups: [{ TargetGroupArn: 'arn:tg/session' }] };
+        case 'DescribeRules':
+          return { Rules: full };
+        default:
+          return {};
+      }
+    });
+
+    await expect(provisionSessionRouting(SESSION, '10.10.2.155')).resolves.toBeNull();
+    expect(calls).toContain('DeleteTargetGroup');
+  });
+});
+
+describe('reconcileOrphanRouting', () => {
+  const LIVE = 'live-session';
+  const GONE = 'gone-session';
+  const STALE = 'stopped-long-ago';
+
+  const sessionRule = (sessionId: string, priority: string) => ({
+    RuleArn: `arn:rule/${sessionId}`,
+    Priority: priority,
+    IsDefault: false,
+    Conditions: [
+      { Field: 'http-header', HttpHeaderConfig: { HttpHeaderName: 'x-sandbox-session', Values: [sessionId] } },
+      { Field: 'path-pattern', PathPatternConfig: { Values: ['/ws/*', '/sandbox-preview/*'] } },
+    ],
+    Actions: [{ Type: 'forward', TargetGroupArn: `arn:aws:elasticloadbalancing:us-west-2:123:targetgroup/sbx-s-${sessionId}/1` }],
+  });
+
+  const staticRules = [
+    { RuleArn: 'arn:rule/default', Priority: 'default', IsDefault: true, Conditions: [], Actions: [{ Type: 'fixed-response' }] },
+    {
+      RuleArn: 'arn:rule/preview-20',
+      Priority: '20',
+      IsDefault: false,
+      Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/sandbox-preview/*'] } }],
+      Actions: [{ Type: 'forward', TargetGroupArn: 'arn:aws:elasticloadbalancing:us-west-2:123:targetgroup/bd-vibe-sbx-sidecar/1' }],
+    },
+    {
+      RuleArn: 'arn:rule/ws-900',
+      Priority: '900',
+      IsDefault: false,
+      // Even a static rule carrying a session header condition is never touched.
+      Conditions: [{ Field: 'http-header', HttpHeaderConfig: { HttpHeaderName: 'x-sandbox-session', Values: [GONE] } }],
+      Actions: [{ Type: 'forward', TargetGroupArn: 'arn:aws:elasticloadbalancing:us-west-2:123:targetgroup/sbx-s-gone/1' }],
+    },
+  ];
+
+  const tg = (sessionId: string, managedBy = 'bd-vibe-session-manager', lbs: string[] = []) => ({
+    TargetGroupArn: `arn:tg/sbx-s-${sessionId}`,
+    TargetGroupName: `sbx-s-${sessionId}`.slice(0, 32),
+    LoadBalancerArns: lbs,
+    _tags: [
+      { Key: 'ManagedBy', Value: managedBy },
+      { Key: 'SessionId', Value: sessionId },
+    ],
+  });
+
+  function mockListener(groups: ReturnType<typeof tg>[], deletedRules: string[], deletedGroups: string[]) {
+    mockElbSend.mockImplementation((cmd: any) => {
+      switch (cmd._type) {
+        case 'DescribeRules':
+          return {
+            Rules: [...staticRules, sessionRule(LIVE, '100'), sessionRule(GONE, '101'), sessionRule(STALE, '102')],
+          };
+        case 'DeleteRule':
+          deletedRules.push(cmd.input.RuleArn);
+          return {};
+        case 'DescribeTargetGroups':
+          return { TargetGroups: groups.map(({ _tags, ...g }) => g) };
+        case 'DescribeTags':
+          return {
+            TagDescriptions: (cmd.input.ResourceArns as string[]).map((arn) => ({
+              ResourceArn: arn,
+              Tags: groups.find((g) => g.TargetGroupArn === arn)?._tags ?? [],
+            })),
+          };
+        case 'DeleteTargetGroup':
+          deletedGroups.push(cmd.input.TargetGroupArn);
+          return {};
+        default:
+          return {};
+      }
+    });
+  }
+
+  const isOrphan = async (sessionId: string) => sessionId !== LIVE;
+
+  it('deletes per-session rules whose session is gone and leaves live and static rules alone', async () => {
+    const deletedRules: string[] = [];
+    mockListener([], deletedRules, []);
+
+    const result = await reconcileOrphanRouting(isOrphan);
+
+    expect(deletedRules.sort()).toEqual([`arn:rule/${GONE}`, `arn:rule/${STALE}`].sort());
+    expect(deletedRules).not.toContain('arn:rule/default');
+    expect(deletedRules).not.toContain('arn:rule/preview-20');
+    expect(deletedRules).not.toContain('arn:rule/ws-900');
+    // Session rules on the listener before this run's deletions.
+    expect(result.sessionRuleCount).toBe(3);
+    expect(result.deletedRules).toBe(2);
+  });
+
+  it('deletes orphan session target groups this stack manages, and nothing else', async () => {
+    const deletedGroups: string[] = [];
+    mockListener(
+      [tg(LIVE), tg(GONE), tg('foreign-stack', 'other-stack-session-manager'), tg('in-use', 'bd-vibe-session-manager', ['arn:lb'])],
+      [],
+      deletedGroups,
+    );
+
+    await reconcileOrphanRouting(isOrphan);
+
+    expect(deletedGroups).toEqual([`arn:tg/sbx-s-${GONE}`]);
+  });
+
+  it('caps deletions per run', async () => {
+    const deletedRules: string[] = [];
+    mockListener([], deletedRules, []);
+
+    await reconcileOrphanRouting(isOrphan, { maxDeletions: 1 });
+
+    expect(deletedRules).toHaveLength(1);
+  });
+
+  it('never throws, so the cleanup cron keeps running', async () => {
+    mockElbSend.mockImplementation(() => {
+      throw new Error('Throttled');
+    });
+
+    await expect(reconcileOrphanRouting(isOrphan)).resolves.toEqual(
+      expect.objectContaining({ deletedRules: 0 }),
+    );
   });
 });

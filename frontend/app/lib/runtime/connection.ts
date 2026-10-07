@@ -22,6 +22,38 @@ function reconnectExhaustedMessage(maxAttempts: number): string {
   return `Not connected: reconnect attempts exhausted after ${maxAttempts} tries`;
 }
 
+const SESSION_REFUSED =
+  'Not connected: the sandbox container refused this session. It has ended; start a new session to continue.';
+
+/**
+ * Close codes with which a container refuses this session: 4003 'Not assigned'
+ * (the task serves a different session) and 4001 'Wrong container' (older
+ * sidecars). Neither clears by simply redialling the same URL.
+ */
+const REFUSAL_CODES = new Set([4001, 4003]);
+
+/** Raised by a connect attempt the container refused. */
+class SessionRefusedError extends Error {
+  constructor(readonly code: number) {
+    super(`The sandbox container refused this session (close code ${code})`);
+  }
+}
+
+/**
+ * A WebSocket URL safe to log or put in an error: no query string.
+ *
+ * The endpoint is a CloudFront signed URL, and its query (Policy, Signature,
+ * Key-Pair-Id) is a bearer credential for the session's socket until it expires.
+ */
+export function redactWsUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
+  } catch {
+    return '[unparseable url]';
+  }
+}
+
 /**
  * Unanswered pings in a row before the socket is declared dead.
  *
@@ -54,6 +86,12 @@ export class RuntimeConnectionImpl implements RuntimeConnection {
    */
   #reconnectExhausted = false;
 
+  /** Refusals since the last successful connect; see {@link #connectWithRefusalRetry}. */
+  #refusals = 0;
+
+  /** Set once the container has refused this session for good. */
+  #sessionRefused = false;
+
   /**
    * Unanswered pings in a row on the *current* socket. Reset by any answered
    * ping and by every fresh ping interval, so only a genuine run counts.
@@ -79,6 +117,7 @@ export class RuntimeConnectionImpl implements RuntimeConnection {
       requestTimeout: 120000,
       pingInterval: 30000,
       pingTimeout: 10000,
+      maxRefusedRetries: 3,
       ...config,
     };
   }
@@ -91,9 +130,13 @@ export class RuntimeConnectionImpl implements RuntimeConnection {
       return this.#connectPromise;
     }
 
+    if (this.#sessionRefused) {
+      throw new Error(SESSION_REFUSED);
+    }
+
     this.#closed = false;
     this.#reconnectExhausted = false;
-    this.#connectPromise = this.#doConnect();
+    this.#connectPromise = this.#connectWithRefusalRetry();
 
     try {
       await this.#connectPromise;
@@ -102,9 +145,81 @@ export class RuntimeConnectionImpl implements RuntimeConnection {
     }
   }
 
+  /**
+   * Connect, re-signing and retrying a few times if the container refuses the
+   * session, then giving up for good.
+   *
+   * A brief refusal is plausible — the task's session assignment can take a
+   * moment to become readable — but a container never changes which session it
+   * serves, so a refusal that persists means this session's container is gone.
+   * Spending the whole reconnect budget on it only delays telling the user.
+   */
+  async #connectWithRefusalRetry(): Promise<void> {
+    for (;;) {
+      try {
+        await this.#doConnect();
+        this.#refusals = 0;
+        return;
+      } catch (err) {
+        if (!(err instanceof SessionRefusedError) || this.#closed) {
+          throw err;
+        }
+
+        this.#refusals++;
+
+        if (this.#refusals > this.#config.maxRefusedRetries!) {
+          this.#giveUpOnRefusedSession(err.code);
+          throw new Error(SESSION_REFUSED);
+        }
+
+        logger.warn(
+          `Sandbox container refused the session (code ${err.code}); re-signing and retrying ` +
+            `(${this.#refusals}/${this.#config.maxRefusedRetries})`,
+        );
+
+        await new Promise((r) => setTimeout(r, this.#config.reconnectInterval! * this.#refusals));
+
+        if (this.#closed) {
+          throw new Error(PERMANENTLY_CLOSED);
+        }
+
+        await this.#refreshEndpoint();
+      }
+    }
+  }
+
+  #giveUpOnRefusedSession(code: number): void {
+    logger.error(`Sandbox container refused the session ${this.#refusals} times (code ${code}); giving up`);
+    this.#sessionRefused = true;
+    this.#rejectReadyWaiters(new Error(SESSION_REFUSED));
+
+    try {
+      this.#config.onSessionRefused?.();
+    } catch (err) {
+      logger.error('onSessionRefused handler failed:', err);
+    }
+  }
+
+  /** Ask for a freshly signed endpoint. Failing to get one keeps the current one. */
+  async #refreshEndpoint(): Promise<void> {
+    if (!this.#config.refreshEndpoint) {
+      return;
+    }
+
+    try {
+      const refreshed = await this.#config.refreshEndpoint();
+      if (refreshed) {
+        this.#config.wsEndpoint = refreshed;
+      }
+    } catch (err) {
+      logger.warn('Could not refresh the connection endpoint:', err);
+    }
+  }
+
   #doConnect(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      logger.debug('Connecting to', this.#config.wsEndpoint);
+      logger.debug('Connecting to', redactWsUrl(this.#config.wsEndpoint));
+      let ready = false;
 
       // The endpoint is a CloudFront signed URL and is dialled exactly as issued:
       // the signature is what authorises the upgrade. No user credential is added
@@ -133,6 +248,7 @@ export class RuntimeConnectionImpl implements RuntimeConnection {
 
         // Resolve the connect promise when we receive system:ready
         if (msg.type === 'system:ready:event') {
+          ready = true;
           clearTimeout(connectTimeout);
           const payload = msg.payload as { sessionId: string; containerId: string; workdir: string };
           this.#session = payload;
@@ -186,15 +302,28 @@ export class RuntimeConnectionImpl implements RuntimeConnection {
 
       this.#ws.onclose = (event: CloseEvent) => {
         logger.debug('WebSocket closed:', event.code, event.reason);
+
+        // The container refused this session before announcing readiness. That
+        // is the connect attempt's failure to handle (re-sign and retry, or give
+        // up), not a dropped connection to reconnect.
+        if (!ready && REFUSAL_CODES.has(event.code)) {
+          clearTimeout(connectTimeout);
+          this.#stopPingInterval();
+          this.#rejectAllPending('Connection closed');
+          reject(new SessionRefusedError(event.code));
+          return;
+        }
+
         this.#handleDisconnect();
       };
 
       this.#ws.onerror = () => {
         clearTimeout(connectTimeout);
 
-        // Only reject on initial connect; reconnects are handled by onclose
+        // Only reject on initial connect; reconnects are handled by onclose.
+        // The URL is redacted: its query string is the signed-URL credential.
         if (this.#reconnectAttempts === 0) {
-          reject(new Error(`WebSocket connection failed to ${this.#config.wsEndpoint}`));
+          reject(new Error(`WebSocket connection failed to ${redactWsUrl(this.#config.wsEndpoint)}`));
         }
       };
     });
@@ -504,6 +633,10 @@ export class RuntimeConnectionImpl implements RuntimeConnection {
       return PERMANENTLY_CLOSED;
     }
 
+    if (this.#sessionRefused) {
+      return SESSION_REFUSED;
+    }
+
     if (this.#reconnectExhausted) {
       return reconnectExhaustedMessage(this.#config.maxReconnectAttempts!);
     }
@@ -574,16 +707,7 @@ export class RuntimeConnectionImpl implements RuntimeConnection {
       // The endpoint's signed URL is short-lived and backoff can outlast it,
       // so ask for a fresh one before retrying. Failing to refresh is not fatal —
       // the existing endpoint may still be valid.
-      if (this.#config.refreshEndpoint) {
-        try {
-          const refreshed = await this.#config.refreshEndpoint();
-          if (refreshed) {
-            this.#config.wsEndpoint = refreshed;
-          }
-        } catch (err) {
-          logger.warn('Could not refresh the connection endpoint:', err);
-        }
-      }
+      await this.#refreshEndpoint();
 
       this.connect().then(() => {
         logger.debug('Reconnected successfully');

@@ -1132,3 +1132,341 @@ describe('Projects Lambda', () => {
     });
   });
 });
+
+/**
+ * Sev2 follow-up: project slug shadowing.
+ *
+ * A request path can be a projectId or a urlId, neither is unique across users,
+ * and the projectId is client-supplied. Resolution must therefore be scoped to
+ * the caller: it must never land on a project they neither own nor belong to,
+ * and another user creating a colliding id or slug must not redirect the
+ * caller's reads or writes into that user's project.
+ */
+describe('Projects Lambda — Sev2 slug shadowing', () => {
+  const VICTIM = 'user-victim';
+  const ATTACKER = 'user-attacker';
+  const BOB = 'user-bob';
+
+  const meta = (projectId: string, ownerId: string, urlId: string | undefined, createdAt: number) => {
+    const item: Record<string, any> = {
+      projectId: { S: projectId },
+      sk: { S: 'META' },
+      ownerId: { S: ownerId },
+      createdAt: { N: String(createdAt) },
+      updatedAt: { N: String(createdAt) },
+      expiresAt: { N: '9999999999' },
+    };
+    if (urlId) item.urlId = { S: urlId };
+    return item;
+  };
+
+  const member = (projectId: string, userId: string) => ({
+    projectId: { S: projectId },
+    sk: { S: `MEMBER#${userId}` },
+    userId: { S: userId },
+    role: { S: 'editor' },
+    addedAt: { N: '1' },
+  });
+
+  const cancelled = (codes: string[]) =>
+    Object.assign(new Error('Transaction cancelled'), {
+      name: 'TransactionCanceledException',
+      CancellationReasons: codes.map((Code) => ({ Code })),
+    });
+
+  /**
+   * In-memory projects table keyed `${projectId}|${sk}`, evaluating the
+   * conditions these code paths rely on, and recording every write.
+   */
+  function table(items: Record<string, any>[]) {
+    const store = new Map<string, any>();
+    const key = (projectId: string, sk: string) => `${projectId}|${sk}`;
+    for (const item of items) store.set(key(item.projectId.S, item.sk.S), item);
+    const writes: any[] = [];
+
+    const putHolds = (put: any) => {
+      const exists = store.has(key(put.Item.projectId.S, put.Item.sk.S));
+      const cond = String(put.ConditionExpression ?? '');
+      return !(cond.includes('attribute_not_exists(projectId)') && exists);
+    };
+
+    mockDynamoSend.mockImplementation(async (cmd: any) => {
+      const input = cmd.input ?? {};
+
+      switch (cmd._type) {
+        case 'GetItem': {
+          const item = store.get(key(input.Key.projectId.S, input.Key.sk.S));
+          return item ? { Item: item } : {};
+        }
+        case 'Query': {
+          if (input.IndexName === 'byUrlId') {
+            const urlId = input.ExpressionAttributeValues[':urlId'].S;
+            return { Items: [...store.values()].filter((i) => i.urlId?.S === urlId) };
+          }
+          const projectId = input.ExpressionAttributeValues[':projectId']?.S;
+          const prefix = input.ExpressionAttributeValues[':prefix']?.S ?? '';
+          return {
+            Items: [...store.values()].filter((i) => i.projectId.S === projectId && i.sk.S.startsWith(prefix)),
+          };
+        }
+        case 'TransactWriteItems': {
+          const ops = input.TransactItems;
+          const codes = ops.map((op: any) => {
+            if (op.Put) return putHolds(op.Put) ? 'None' : 'ConditionalCheckFailed';
+            if (op.Update) {
+              const exists = store.get(key(op.Update.Key.projectId.S, op.Update.Key.sk.S));
+              const cond = String(op.Update.ConditionExpression ?? '');
+              if (cond.includes('attribute_exists(projectId)') && !exists) return 'ConditionalCheckFailed';
+              if (cond.includes('attribute_not_exists(urlId)') && exists?.urlId) return 'ConditionalCheckFailed';
+              return 'None';
+            }
+            return 'None';
+          });
+          if (codes.some((c: string) => c !== 'None')) throw cancelled(codes);
+          writes.push(cmd);
+          for (const op of ops) {
+            if (op.Put) store.set(key(op.Put.Item.projectId.S, op.Put.Item.sk.S), op.Put.Item);
+            if (op.Update && op.Update.ExpressionAttributeValues?.[':urlId']) {
+              const k = key(op.Update.Key.projectId.S, op.Update.Key.sk.S);
+              store.set(k, { ...store.get(k), urlId: op.Update.ExpressionAttributeValues[':urlId'] });
+            }
+          }
+          return {};
+        }
+        case 'DeleteItem': {
+          const k = key(input.Key.projectId.S, input.Key.sk.S);
+          const existing = store.get(k);
+          const cond = String(input.ConditionExpression ?? '');
+          if (cond.includes('claimedProjectId = :pid') && existing?.claimedProjectId?.S !== input.ExpressionAttributeValues[':pid'].S) {
+            throw Object.assign(new Error('cond'), { name: 'ConditionalCheckFailedException' });
+          }
+          writes.push(cmd);
+          store.delete(k);
+          return {};
+        }
+        default:
+          writes.push(cmd);
+          return {};
+      }
+    });
+
+    return { store, writes };
+  }
+
+  const writesTo = (writes: any[], projectId: string) =>
+    writes.filter((w) => JSON.stringify(w.input).includes(`"${projectId}"`));
+
+  beforeEach(() => jest.clearAllMocks());
+
+  describe('resolution is scoped to the caller', () => {
+    it("ignores another user's project whose projectId equals the caller's urlId", async () => {
+      table([
+        meta('proj-victim', VICTIM, 'my-app', 1000),
+        // Attacker picks a client-supplied projectId equal to the victim's slug.
+        meta('my-app', ATTACKER, undefined, 2000),
+      ]);
+
+      const result = await handler(apiEvent('GET', '/projects/my-app', null, { id: 'my-app' }, VICTIM));
+
+      expect((result as any).statusCode).toBe(200);
+      expect(JSON.parse((result as any).body).project.projectId).toBe('proj-victim');
+    });
+
+    it("prefers the caller's own project even when an attacker has added them to a colliding one", async () => {
+      table([
+        meta('proj-victim', VICTIM, 'my-app', 1000),
+        meta('my-app', ATTACKER, 'my-app', 500),
+        member('my-app', VICTIM),
+      ]);
+
+      const result = await handler(apiEvent('GET', '/projects/my-app', null, { id: 'my-app' }, VICTIM));
+
+      expect(JSON.parse((result as any).body).project.projectId).toBe('proj-victim');
+    });
+
+    it("never writes the caller's messages into another user's project via a shared slug", async () => {
+      const { writes } = table([
+        meta('proj-victim', VICTIM, 'my-app', 1000),
+        meta('my-app', ATTACKER, 'my-app', 500),
+        member('my-app', VICTIM),
+      ]);
+
+      const result = await handler(
+        apiEvent('POST', '/projects/my-app/messages', { messages: [{ id: 'm1', role: 'user', content: 'secret' }] }, { id: 'my-app' }, VICTIM),
+      );
+
+      expect((result as any).statusCode).toBe(200);
+      expect(writesTo(writes, 'my-app').filter((w) => JSON.stringify(w.input).includes('secret'))).toHaveLength(0);
+      expect(writes.some((w) => JSON.stringify(w.input).includes('proj-victim'))).toBe(true);
+    });
+
+    it('refuses to guess when the caller belongs to two other-owned projects sharing an id', async () => {
+      // A guest in Bob's project, whom an attacker has also added to a
+      // look-alike: there is no safe way to pick, so nothing is read or written.
+      const { writes } = table([
+        meta('proj-bob', BOB, 'shared-app', 1000),
+        member('proj-bob', VICTIM),
+        meta('proj-evil', ATTACKER, 'shared-app', 2000),
+        member('proj-evil', VICTIM),
+      ]);
+
+      const read = await handler(apiEvent('GET', '/projects/shared-app', null, { id: 'shared-app' }, VICTIM));
+      const write = await handler(
+        apiEvent('POST', '/projects/shared-app/messages', { messages: [{ id: 'm1', role: 'user', content: 'x' }] }, { id: 'shared-app' }, VICTIM),
+      );
+
+      expect((read as any).statusCode).toBe(409);
+      expect((write as any).statusCode).toBe(409);
+      expect(writes).toHaveLength(0);
+    });
+
+    it('still resolves an unambiguous project the caller was invited into, by slug', async () => {
+      table([meta('proj-bob', BOB, 'shared-app', 1000), member('proj-bob', VICTIM)]);
+
+      const result = await handler(apiEvent('GET', '/projects/shared-app', null, { id: 'shared-app' }, VICTIM));
+
+      expect((result as any).statusCode).toBe(200);
+      expect(JSON.parse((result as any).body).project.projectId).toBe('proj-bob');
+    });
+
+    it('refuses a stranger reading or writing by slug, with no write', async () => {
+      const { writes } = table([meta('proj-victim', VICTIM, 'my-app', 1000)]);
+
+      const read = await handler(apiEvent('GET', '/projects/my-app', null, { id: 'my-app' }, ATTACKER));
+      const write = await handler(
+        apiEvent('POST', '/projects/my-app/messages', { messages: [{ id: 'm1', role: 'user', content: 'x' }] }, { id: 'my-app' }, ATTACKER),
+      );
+
+      expect((read as any).statusCode).toBe(403);
+      expect((write as any).statusCode).toBe(403);
+      expect(JSON.parse((read as any).body).project).toBeUndefined();
+      expect(writes).toHaveLength(0);
+    });
+
+    it("refuses an owner-only action on someone else's slug, with no write", async () => {
+      const { writes, store } = table([meta('proj-victim', VICTIM, 'my-app', 1000)]);
+
+      const del = await handler(apiEvent('DELETE', '/projects/my-app', null, { id: 'my-app' }, ATTACKER));
+      const share = await handler(apiEvent('POST', '/projects/my-app/members', { userId: ATTACKER }, { id: 'my-app' }, ATTACKER));
+
+      expect((del as any).statusCode).toBe(403);
+      expect((share as any).statusCode).toBe(403);
+      expect(writes).toHaveLength(0);
+      expect(store.has('proj-victim|META')).toBe(true);
+    });
+
+    it("an owner-only action by slug acts on the caller's own project, not a colliding one", async () => {
+      const { writes } = table([
+        meta('proj-victim', VICTIM, 'my-app', 1000),
+        meta('my-app', ATTACKER, undefined, 2000),
+      ]);
+
+      const result = await handler(apiEvent('PATCH', '/projects/my-app', { description: 'renamed' }, { id: 'my-app' }, VICTIM));
+
+      expect((result as any).statusCode).toBe(200);
+      const updates = writes.filter((w) => w._type === 'UpdateItem');
+      expect(updates).toHaveLength(1);
+      expect(updates[0].input.Key.projectId.S).toBe('proj-victim');
+    });
+
+    it('refuses a client-supplied project id inside the claim namespace', async () => {
+      const { writes } = table([]);
+
+      const result = await handler(
+        apiEvent('POST', '/projects', { id: `URLID#${VICTIM}#my-app` }, undefined, ATTACKER),
+      );
+
+      expect((result as any).statusCode).toBe(400);
+      expect(writes).toHaveLength(0);
+    });
+  });
+
+  describe('urlId is unique per owner', () => {
+    it('claims the urlId with a conditional item when a project is created with one', async () => {
+      const { writes } = table([]);
+
+      const result = await handler(apiEvent('POST', '/projects', { id: 'p1', urlId: 'my-app' }, undefined, VICTIM));
+
+      expect((result as any).statusCode).toBe(201);
+      const tx = writes.find((w) => w._type === 'TransactWriteItems');
+      const claim = tx.input.TransactItems.find((op: any) => op.Put?.Item?.sk?.S === 'URLID_CLAIM');
+      expect(claim.Put.Item.projectId.S).toBe(`URLID#${VICTIM}#my-app`);
+      expect(claim.Put.Item.claimedProjectId.S).toBe('p1');
+      expect(claim.Put.ConditionExpression).toContain('attribute_not_exists(projectId)');
+      // The claim must not show up in either GSI.
+      expect(claim.Put.Item.urlId).toBeUndefined();
+      expect(claim.Put.Item.ownerId).toBeUndefined();
+    });
+
+    it("refuses a second project with a urlId the owner's live project already holds", async () => {
+      const { store } = table([]);
+      await handler(apiEvent('POST', '/projects', { id: 'p1', urlId: 'my-app' }, undefined, VICTIM));
+
+      const result = await handler(apiEvent('POST', '/projects', { id: 'p2', urlId: 'my-app' }, undefined, VICTIM));
+
+      expect((result as any).statusCode).toBe(409);
+      expect(store.has('p2|META')).toBe(false);
+    });
+
+    it('lets a different owner use the same urlId, since resolution is scoped to the caller', async () => {
+      table([]);
+      await handler(apiEvent('POST', '/projects', { id: 'p1', urlId: 'my-app' }, undefined, VICTIM));
+
+      const result = await handler(apiEvent('POST', '/projects', { id: 'p2', urlId: 'my-app' }, undefined, ATTACKER));
+
+      expect((result as any).statusCode).toBe(201);
+    });
+
+    it('reclaims a urlId whose claimed project no longer exists', async () => {
+      const { store } = table([
+        {
+          projectId: { S: `URLID#${VICTIM}#my-app` },
+          sk: { S: 'URLID_CLAIM' },
+          claimedProjectId: { S: 'p-gone' },
+        },
+      ]);
+
+      const result = await handler(apiEvent('POST', '/projects', { id: 'p2', urlId: 'my-app' }, undefined, VICTIM));
+
+      expect((result as any).statusCode).toBe(201);
+      expect(store.get(`URLID#${VICTIM}#my-app|URLID_CLAIM`).claimedProjectId.S).toBe('p2');
+    });
+
+    it('claims the urlId conditionally when it is first set by PATCH, and refuses a taken one', async () => {
+      const { store } = table([
+        meta('p1', VICTIM, 'my-app', 1000),
+        { projectId: { S: `URLID#${VICTIM}#my-app` }, sk: { S: 'URLID_CLAIM' }, claimedProjectId: { S: 'p1' } },
+        meta('p2', VICTIM, undefined, 2000),
+      ]);
+
+      const taken = await handler(apiEvent('PATCH', '/projects/p2', { urlId: 'my-app' }, { id: 'p2' }, VICTIM));
+      const fresh = await handler(apiEvent('PATCH', '/projects/p2', { urlId: 'other-app' }, { id: 'p2' }, VICTIM));
+
+      expect((taken as any).statusCode).toBe(409);
+      expect((fresh as any).statusCode).toBe(200);
+      expect(store.get('p2|META').urlId.S).toBe('other-app');
+      expect(store.get(`URLID#${VICTIM}#other-app|URLID_CLAIM`).claimedProjectId.S).toBe('p2');
+    });
+
+    it('releases the claim when the project is deleted', async () => {
+      const { store } = table([
+        meta('p1', VICTIM, 'my-app', 1000),
+        { projectId: { S: `URLID#${VICTIM}#my-app` }, sk: { S: 'URLID_CLAIM' }, claimedProjectId: { S: 'p1' } },
+      ]);
+
+      const result = await handler(apiEvent('DELETE', '/projects/p1', null, { id: 'p1' }, VICTIM));
+
+      expect((result as any).statusCode).toBe(200);
+      expect(store.has(`URLID#${VICTIM}#my-app|URLID_CLAIM`)).toBe(false);
+    });
+
+    it('still resolves a legacy project that has a urlId but no claim item', async () => {
+      table([meta('p-legacy', VICTIM, 'old-app', 1000)]);
+
+      const result = await handler(apiEvent('GET', '/projects/old-app', null, { id: 'old-app' }, VICTIM));
+
+      expect((result as any).statusCode).toBe(200);
+      expect(JSON.parse((result as any).body).project.projectId).toBe('p-legacy');
+    });
+  });
+});

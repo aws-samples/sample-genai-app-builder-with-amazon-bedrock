@@ -27,7 +27,11 @@ export const handler = (globalThis as any).awslambda.streamifyResponse(
             });
 
             console.log('🎯 Forwarding to Remix /api/chat route');
-            const response = await requestHandler(request, context);
+            // Pass the event as load context (as server.ts does) so the route can
+            // read the caller AWS verified: the API Gateway authorizer context on
+            // /stream, or the SigV4 caller on the AWS_IAM Function URL. Without it
+            // the route would see no identity and refuse every request.
+            const response = await requestHandler(request, { event, context } as any);
 
             // Propagate Remix's actual status and content type instead of
             // hardcoding 200 + text/plain. Previously we committed the

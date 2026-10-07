@@ -8,6 +8,8 @@ interface CreateSessionResponse {
   sessionId: string;
   wsUrl: string;
   previewDomain: string;
+  /** Live preview URL on the untrusted-content origin (never the app's). */
+  previewUrl?: string;
   /**
    * Project the invite also granted, when joining a shared session. Lets the
    * joiner load the conversation behind the files rather than an empty chat.
@@ -31,10 +33,13 @@ interface SessionStatusResponse {
   };
   wsUrl?: string;
   previewDomain?: string;
+  previewUrl?: string;
 }
 
 interface CreateInviteResponse {
   token: string;
+  /** When the link stops being redeemable (epoch seconds). */
+  expiresAt?: number;
 }
 
 export class SessionClient extends ApiClientBase {
@@ -113,8 +118,9 @@ export class SessionClient extends ApiClientBase {
     const data = (await response.json()) as CreateSessionResponse;
     this.sessionId = data.sessionId;
 
+    // Never log `data.wsUrl`: it is CloudFront-signed and is the credential for
+    // the sandbox socket until it expires.
     logger.info('Session created:', data.sessionId);
-    logger.info('WebSocket URL:', data.wsUrl);
 
     this.startHeartbeat();
 
@@ -124,10 +130,10 @@ export class SessionClient extends ApiClientBase {
   /**
    * Mint an invite token for a session so a teammate can join it live.
    *
-   * Only the owner may invite. The token does not expire — an invited
-   * collaborator is a permanent member, the way they are in a shared document —
-   * but it is single-use and revocable, so it grants access to the one person who
-   * accepts it rather than to everyone it is ever forwarded to.
+   * Only the owner may invite, and the project is only carried if the caller
+   * owns it (the server refuses otherwise). The link is single-use, expires
+   * after `expiresAt` if nobody redeems it, and revoking it also removes the
+   * person who redeemed it. Once in, a collaborator stays a member until then.
    */
   async createInvite(sessionId?: string, projectId?: string): Promise<CreateInviteResponse> {
     const id = sessionId || this.sessionId;
@@ -154,24 +160,6 @@ export class SessionClient extends ApiClientBase {
     }
 
     return (await response.json()) as CreateInviteResponse;
-  }
-
-  /**
-   * Report which container is serving a session, so collaborators are routed to
-   * the same one. Owner-only server-side; failures are the caller's to ignore.
-   */
-  async bindContainer(sessionId: string, containerId: string): Promise<void> {
-    const baseUrl = this.getRestApiUrl();
-
-    const response = await this.authedFetch(`${baseUrl}/session/${sessionId}/bind`, {
-      method: 'POST',
-      body: JSON.stringify({ containerId }),
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Failed to bind container: ${response.status} ${body}`);
-    }
   }
 
   /**

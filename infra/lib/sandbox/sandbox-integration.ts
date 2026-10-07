@@ -1,7 +1,10 @@
 import * as path from 'path';
 import * as cdk from 'aws-cdk-lib';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as route53Targets from 'aws-cdk-lib/aws-route53-targets';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
 
@@ -24,7 +27,16 @@ export interface SandboxInfrastructureProps {
   alarmEmail?: string | string[];
   /** Value of the `X-Origin-Verify` header CloudFront sends to the sandbox ALB. */
   originVerifyHeaderValue: string;
+  /**
+   * Hosted zone and domain we own. When given, the ALB gets a certificate for
+   * `sandbox-origin.<domainName>` (plus a DNS alias) so CloudFront can reach it
+   * over TLS. Without it there is no hostname to certify and the hop is HTTP.
+   */
+  originTls?: { hostedZone: route53.IHostedZone; domainName: string };
 }
+
+/** Label under the custom domain that CloudFront uses to reach the sandbox ALB. */
+export const SANDBOX_ORIGIN_LABEL = 'sandbox-origin';
 
 export class SandboxInfrastructure extends Construct {
   public readonly vpc: SandboxVpc;
@@ -33,6 +45,10 @@ export class SandboxInfrastructure extends Construct {
   public readonly alb: SandboxAlb;
   public readonly sessions: SandboxSessions;
   public readonly ecrRebuild: SandboxEcrRebuild;
+  /** Hostname CloudFront origins must use to reach the ALB. */
+  public readonly originDomainName: string;
+  /** True when the ALB terminates TLS for originDomainName (use HTTPS_ONLY origins). */
+  public readonly originUsesTls: boolean;
 
   constructor(scope: Construct, id: string, props: SandboxInfrastructureProps) {
     super(scope, id);
@@ -59,6 +75,20 @@ export class SandboxInfrastructure extends Construct {
       maxCapacity,
     });
 
+    // Certificate for the origin hostname. CloudFront validates the origin's
+    // certificate against the origin domain, and the ALB's own *.elb.amazonaws.com
+    // name can't be certified, so the ALB is given a name under our domain.
+    // Regional (stack region), not us-east-1: it is used by the ALB.
+    const originHost = props.originTls
+      ? `${SANDBOX_ORIGIN_LABEL}.${props.originTls.domainName}`
+      : undefined;
+    const originCertificate = props.originTls
+      ? new acm.Certificate(this, 'AlbOriginCertificate', {
+          domainName: originHost!,
+          validation: acm.CertificateValidation.fromDns(props.originTls.hostedZone),
+        })
+      : undefined;
+
     // Application Load Balancer
     this.alb = new SandboxAlb(this, 'Alb', {
       stackPrefix,
@@ -66,16 +96,27 @@ export class SandboxInfrastructure extends Construct {
       albSg: this.security.albSg,
       logsBucket,
       originVerifyHeaderValue: props.originVerifyHeaderValue,
+      certificate: originCertificate,
     });
 
-    // Register the ECS service with the sidecar target group (port 8080). This
-    // group backs the static /ws/* and /sandbox-preview/* rules, which balance
-    // across the whole warm pool.
+    if (props.originTls) {
+      new route53.ARecord(this, 'AlbOriginRecord', {
+        zone: props.originTls.hostedZone,
+        recordName: originHost,
+        target: route53.RecordTarget.fromAlias(new route53Targets.LoadBalancerTarget(this.alb.alb)),
+      });
+    }
+    this.originDomainName = originHost ?? this.alb.alb.loadBalancerDnsName;
+    this.originUsesTls = originCertificate !== undefined;
+
+    // Register the ECS service with the sidecar target group (port 8080). It
+    // serves health checks only: no static rule forwards session traffic to the
+    // pool any more (see sandbox-alb.ts).
     //
-    // A session that has been claimed also gets its own target group and listener
-    // rule, created by the session manager Lambda (see alb-routing.ts), so all of
-    // its collaborators reach the single container serving it. Those per-session
-    // rules take precedence; the static rules remain the fallback.
+    // A claimed session gets its own target group and listener rule, created by
+    // the session manager Lambda (see alb-routing.ts), so all of its
+    // collaborators reach the single container serving it. A session without
+    // one gets a 503.
     this.alb.sidecarTargetGroup.addTarget(
       this.cluster.service.loadBalancerTarget({
         containerName: `${stackPrefix}-sandbox-container`,
@@ -96,6 +137,7 @@ export class SandboxInfrastructure extends Construct {
       stackPrefix,
       cluster: this.cluster.cluster,
       service: this.cluster.service,
+      taskDefinition: this.cluster.taskDefinition,
       alarmEmail,
     });
 

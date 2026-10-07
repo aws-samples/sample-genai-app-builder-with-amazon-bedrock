@@ -31,6 +31,11 @@ import { SandboxInfrastructure } from './sandbox';
 import { ORIGIN_VERIFY_HEADER } from './sandbox/sandbox-alb';
 import { SharedSitesBucket } from './shared-sites/shared-sites-bucket';
 import { SharedSitesTable } from './shared-sites/shared-sites-table';
+import {
+  createUntrustedContent,
+  legacyRedirectFunctionCode,
+  type UntrustedContent,
+} from './untrusted-content/untrusted-content';
 import { ProjectsTable } from './projects/projects-table';
 
 interface InfraStackProps extends cdk.StackProps {
@@ -44,6 +49,13 @@ interface InfraStackProps extends cdk.StackProps {
     extractionModelId?: string;
     cognitoUsers?: string[];
     customDomain?: string; // Optional custom domain
+    // Optional separate registrable domain for untrusted content (live previews,
+    // shared sites), e.g. vibe-preview.example.net. Needs a Route 53 hosted zone
+    // for it in this account. Defaults to preview.<customDomain>.
+    previewDomain?: string;
+    // Email(s) notified when the weekly sandbox container patch build fails.
+    // Set in prod so patch failures can't drift out of CVE-remediation SLA unnoticed.
+    alarmEmail?: string | string[];
   };
 }
 
@@ -136,6 +148,28 @@ export class InfraStack extends cdk.Stack {
       autoDeleteObjects: true,
       encryption: s3.BucketEncryption.KMS,
       encryptionKey: encryptionKey,
+    });
+
+    // Access logs for the edge: sandbox ALB, every CloudFront distribution.
+    // Separate from accessLogsBucket because ALB log delivery only supports
+    // SSE-S3, not KMS. CloudFront standard (legacy) logging writes with ACLs,
+    // hence BUCKET_OWNER_PREFERRED rather than ACLs disabled.
+    //
+    // CloudFront logs include the query string, which on /ws/* carries the
+    // signed-URL Policy, Signature and Key-Pair-Id. Those signatures expire after
+    // 120 s and are bound to one session path, and this bucket is private and
+    // TLS-only, so the exposure is small. Dropping the field needs CloudFront
+    // v2 logging (field selection), which must be configured in us-east-1 and so
+    // can't live in this stack.
+    const edgeLogsBucket = new s3.Bucket(this, 'EdgeAccessLogs', {
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      publicReadAccess: false,
+      enforceSSL: true,
+      objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_PREFERRED,
+      lifecycleRules: [{ id: 'expire-after-one-year', expiration: Duration.days(365) }],
+      // Logs outlive the stack; a teardown must not erase the audit trail.
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
     // S3 Bucket for static assets
@@ -750,6 +784,14 @@ The Vibe Team`,
       deploy: true,
       deployOptions: {
         stageName: 'api',
+        // Access logs (one line per request, no query string or body).
+        accessLogDestination: new apigateway.LogGroupLogDestination(
+          new logs.LogGroup(this, 'RestApiAccessLogs', {
+            retention: logs.RetentionDays.ONE_YEAR,
+            removalPolicy: cdk.RemovalPolicy.RETAIN,
+          }),
+        ),
+        accessLogFormat: apigateway.AccessLogFormat.jsonWithStandardFields(),
         loggingLevel: apigateway.MethodLoggingLevel.INFO,
         tracingEnabled: true,
         metricsEnabled: true,
@@ -919,6 +961,30 @@ The Vibe Team`,
       resultsCacheTtl: Duration.minutes(5),
     });
 
+    // /api/* Remix resource routes (CloudFront forwards /api/chat as /api/chat;
+    // the stage name is the origin path). These invoke the model, so they must
+    // not fall through to the public SSR proxy above: everything under /api
+    // runs the REQUEST authorizer by default, and only the two read-only
+    // bootstrap routes the signed-out landing page needs are left open. The
+    // chat / enhancer handlers also reject calls without a verified caller.
+    const remixApiResource = restApi.root.addResource('api', {
+      defaultMethodOptions: {
+        authorizationType: apigateway.AuthorizationType.CUSTOM,
+        authorizer: jwtAuthorizer,
+      },
+    });
+    remixApiResource.addResource('{proxy+}').addMethod(
+      'ANY',
+      new apigateway.LambdaIntegration(remixLambda, { proxy: true }),
+    );
+    for (const publicRoute of ['config', 'metrics']) {
+      remixApiResource.addResource(publicRoute).addMethod(
+        'GET',
+        new apigateway.LambdaIntegration(remixLambda, { proxy: true }),
+        { authorizationType: apigateway.AuthorizationType.NONE },
+      );
+    }
+
     // Streaming resource with JWT auth
     const streamResource = restApi.root.addResource('stream');
     
@@ -1011,6 +1077,10 @@ function handler(event) {
       `),
     });
 
+    // Set once the untrusted-content distribution exists (below); read lazily by
+    // the app CSP so the app may frame previews and nothing else.
+    let untrustedContent: UntrustedContent | undefined;
+
     // Response headers policy for security headers
     const securityHeadersPolicy = new cloudfront.ResponseHeadersPolicy(this, 'SecurityHeadersPolicy', {
       responseHeadersPolicyName: `${stackPrefix}-security-headers`,
@@ -1032,7 +1102,9 @@ function handler(event) {
               sandbox.alb.alb.loadBalancerDnsName,
               `:443 wss://`,
               sandbox.alb.alb.loadBalancerDnsName,
-              `:443; frame-src 'self' https://*.preview.${config.customDomain || 'localhost'}; frame-ancestors 'self';`,
+              `:443; frame-src `,
+              untrustedContent!.frameSource,
+              `; frame-ancestors 'self';`,
             ]),
           }),
           override: true
@@ -1043,6 +1115,10 @@ function handler(event) {
     // CloudFront Distribution
     const distribution = new cloudfront.Distribution(this, 'BedrockVibeDistribution', {
       comment: `CloudFront distribution for ${stackPrefix} Remix App`,
+      enableLogging: true,
+      logBucket: edgeLogsBucket,
+      logFilePrefix: 'cloudfront/main/',
+      logIncludesCookies: false,
       minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
       // Custom domain configuration (if provided)
       ...(config.customDomain && certificate ? {
@@ -1159,19 +1235,8 @@ function handler(event) {
             eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
           }],
         },
-        // Shared sites (static snapshots)
-        '/shared/*': {
-          origin: origins.S3BucketOrigin.withOriginAccessControl(sharedSitesBucket.bucket, {
-            originAccessControl: cloudfrontOac,
-          }),
-          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-          cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
-          allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
-          functionAssociations: [{
-            function: sharedSitesRewriteFn,
-            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
-          }],
-        },
+        // Shared sites are NOT served here: see the legacy redirect behaviors
+        // added after the untrusted-content distribution below.
       },
     });
 
@@ -1429,7 +1494,7 @@ function handler(event) {
       isMultiRegionTrail: false,
       includeGlobalServiceEvents: true,
       sendToCloudWatchLogs: true,
-      cloudWatchLogsRetention: logs.RetentionDays.ONE_MONTH,
+      cloudWatchLogsRetention: logs.RetentionDays.ONE_YEAR,
     });
 
     // CloudTrail-based security detections
@@ -1747,83 +1812,36 @@ exports.handler = async () => {
     const sandbox = new SandboxInfrastructure(this, 'Sandbox', {
       stackPrefix,
       kmsKey: encryptionKey,
+      logsBucket: edgeLogsBucket,
       warmPoolSize: 5,   // Min tasks always warm (instant response for first users)
       maxCapacity: 50,   // Max concurrent users (auto-scales based on demand)
+      alarmEmail: config.alarmEmail,
       originVerifyHeaderValue,
+      // TLS on the CloudFront → ALB hop needs a hostname we own; without a
+      // custom domain the hop stays HTTP (SandboxAlb emits a synth warning).
+      ...(config.customDomain && hostedZone
+        ? { originTls: { hostedZone, domainName: config.customDomain } }
+        : {}),
     });
 
-    // Preview proxy: wildcard cert + CloudFront + Route53 for *.preview.<customDomain>
-    if (config.customDomain && hostedZone) {
-      const previewDomain = `preview.${config.customDomain}`;
-
-      // Wildcard SSL cert for *.preview.<customDomain> (must be us-east-1 for CloudFront)
-      const previewCertificate = new acm.DnsValidatedCertificate(this, 'PreviewCertificate', {
-        domainName: `*.${previewDomain}`,
-        hostedZone,
-        region: 'us-east-1',
-      });
-
-      const previewOrigin = new origins.HttpOrigin(sandbox.alb.alb.loadBalancerDnsName, {
-        protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
-        customHeaders: { [ORIGIN_VERIFY_HEADER]: originVerifyHeaderValue },
-      });
-
-      // Preview CloudFront distribution (separate from main app)
-      const previewDistribution = new cloudfront.Distribution(this, 'PreviewDistribution', {
-        comment: `Preview proxy for ${stackPrefix} sandbox containers`,
-        domainNames: [`*.${previewDomain}`],
-        certificate: previewCertificate,
-        defaultBehavior: {
-          origin: previewOrigin,
-          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
-          originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
-          allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
-        },
-        // This distribution reaches the same ALB, so it must not become an
-        // unsigned way into the sandbox socket. The session manager never signs
-        // a URL for a preview host, so every /ws/* request here is refused.
-        additionalBehaviors: {
-          '/ws/*': {
-            origin: previewOrigin,
-            viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
-            cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
-            trustedKeyGroups: [wsKeyGroup],
-          },
-        },
-        // Enable WebSocket support for Vite HMR
-        httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
-      });
-
-      // Wildcard DNS record: *.preview.<customDomain> → Preview CloudFront
-      new route53.ARecord(this, 'PreviewARecord', {
-        zone: hostedZone,
-        recordName: `*.${previewDomain}`,
-        target: route53.RecordTarget.fromAlias(
-          new route53Targets.CloudFrontTarget(previewDistribution)
-        ),
-      });
-
-      new route53.AaaaRecord(this, 'PreviewAaaaRecord', {
-        zone: hostedZone,
-        recordName: `*.${previewDomain}`,
-        target: route53.RecordTarget.fromAlias(
-          new route53Targets.CloudFrontTarget(previewDistribution)
-        ),
-      });
-
-      new cdk.CfnOutput(this, 'PreviewDomain', {
-        value: `*.${previewDomain}`,
-        description: 'Preview proxy wildcard domain',
-      });
-    }
+    // Every CloudFront origin for the sandbox ALB uses the certificate's hostname
+    // and HTTPS when the ALB has a certificate. CloudFront checks the certificate
+    // against the origin domain, so the ALB's own DNS name can't be used.
+    const sandboxOriginProps: origins.HttpOriginProps = sandbox.originUsesTls
+      ? {
+          protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+          httpsPort: 443,
+          originSslProtocols: [cloudfront.OriginSslPolicy.TLS_V1_2],
+          customHeaders: { [ORIGIN_VERIFY_HEADER]: originVerifyHeaderValue },
+        }
+      : {
+          protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
+          httpPort: 443,
+          customHeaders: { [ORIGIN_VERIFY_HEADER]: originVerifyHeaderValue },
+        };
 
     // ALB origin shared by WebSocket and preview behaviors
-    const albOrigin = new origins.HttpOrigin(sandbox.alb.alb.loadBalancerDnsName, {
-      httpPort: 443,
-      protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
-      customHeaders: { [ORIGIN_VERIFY_HEADER]: originVerifyHeaderValue },
-    });
+    const albOrigin = new origins.HttpOrigin(sandbox.originDomainName, sandboxOriginProps);
 
     // CloudFront Function: extract sessionId from the request path and set the
     // X-Sandbox-Session header for ALB listener rule matching.
@@ -1850,6 +1868,53 @@ function handler(event) {
       `),
     });
 
+    // Untrusted content (live previews, shared sites) on its own distribution and
+    // hostnames, never on the app's origin. See lib/untrusted-content.
+    const untrustedParentDomain = config.previewDomain
+      ?? (config.customDomain ? `preview.${config.customDomain}` : undefined);
+    const untrustedZone = config.previewDomain
+      ? route53.HostedZone.fromLookup(this, 'PreviewHostedZone', { domainName: config.previewDomain })
+      : hostedZone;
+
+    untrustedContent = createUntrustedContent(this, {
+      stackPrefix,
+      albOrigin,
+      logBucket: edgeLogsBucket,
+      previewRequestFunction: previewRewriteFn,
+      sharedSitesBucket: sharedSitesBucket.bucket,
+      sharedSitesRewriteFunction: sharedSitesRewriteFn,
+      originAccessControl: cloudfrontOac,
+      appOrigin: config.customDomain ? `https://${config.customDomain}` : undefined,
+      domain: untrustedParentDomain && untrustedZone
+        ? { parentDomain: untrustedParentDomain, hostedZone: untrustedZone }
+        : undefined,
+    });
+
+    // The app origin used to serve /sandbox-preview/* and /shared/* itself. Those
+    // paths now only redirect to the untrusted host; the function answers every
+    // request, so the (trusted) static-assets origin below is never contacted.
+    const legacyUntrustedRedirectFn = new cloudfront.Function(this, 'LegacyUntrustedRedirectFunction', {
+      functionName: `${stackPrefix}-legacy-untrusted-redirect`,
+      code: cloudfront.FunctionCode.fromInline(legacyRedirectFunctionCode({
+        previewHostTemplate: untrustedContent.previewHostTemplate,
+        sharedSitesHost: untrustedContent.sharedSitesHost,
+      })),
+    });
+    const legacyRedirectBehavior: cloudfront.BehaviorOptions = {
+      origin: origins.S3BucketOrigin.withOriginAccessControl(staticAssetsBucket, {
+        originAccessControl: cloudfrontOac,
+      }),
+      viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+      cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+      allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+      functionAssociations: [{
+        function: legacyUntrustedRedirectFn,
+        eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+      }],
+    };
+    distribution.addBehavior('/shared/*', legacyRedirectBehavior.origin, legacyRedirectBehavior);
+    distribution.addBehavior('/sandbox-preview*', legacyRedirectBehavior.origin, legacyRedirectBehavior);
+
     // Add /ws/* behavior to the main CloudFront distribution → ALB for WebSocket.
     //
     // Restricted to signed URLs from the trusted key group: CloudFront refuses
@@ -1857,18 +1922,6 @@ function handler(event) {
     // so the request never reaches the load balancer or the container.
     distribution.addBehavior('/ws/*', albOrigin, {
       trustedKeyGroups: [wsKeyGroup],
-      viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-      cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
-      originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
-      allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
-      functionAssociations: [{
-        function: previewRewriteFn,
-        eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
-      }],
-    });
-
-    // Add /sandbox-preview/* behavior → ALB (routes to preview target group on port 5173)
-    distribution.addBehavior('/sandbox-preview*', albOrigin, {
       viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
       cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
       originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
@@ -1907,6 +1960,8 @@ function handler(event) {
         ECS_CLUSTER_ARN: sandbox.cluster.cluster.clusterArn,
         ECS_SERVICE_NAME: sandbox.cluster.service.serviceName,
         PREVIEW_DOMAIN: config.customDomain ? `preview.${config.customDomain}` : 'preview.localhost',
+        // Where the client loads a session's live preview: the untrusted origin.
+        PREVIEW_URL_TEMPLATE: untrustedContent.previewUrlTemplate,
         CLOUDFRONT_DOMAIN_PARAM: `/${stackPrefix}/cloudfront/domain-name`,
         METRIC_NAMESPACE: `${stackPrefix}/Sandbox`,
         // Needed to pin a session's WebSocket traffic to the container serving
@@ -1930,18 +1985,28 @@ function handler(event) {
 
     // Grant permissions
     sandbox.sessions.table.grantReadWriteData(sessionManagerLambda);
+    // The session manager reads and stops tasks; it never changes the service,
+    // so it has no ecs:UpdateService.
     sessionManagerLambda.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         'ecs:ListTasks',
         'ecs:DescribeTasks',
         'ecs:StopTask',
-        'ecs:UpdateService',
       ],
       resources: ['*'],
       conditions: {
         ArnLike: {
           'ecs:cluster': sandbox.cluster.cluster.clusterArn,
         },
+      },
+    }));
+    // Assign a claimed task to its session (the sidecar serves only the session
+    // in this tag). Limited to this cluster's tasks and to that one tag key.
+    sessionManagerLambda.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ecs:TagResource'],
+      resources: [`arn:aws:ecs:${this.region}:${this.account}:task/${sandbox.cluster.cluster.clusterName}/*`],
+      conditions: {
+        'ForAllValues:StringEquals': { 'aws:TagKeys': ['SandboxSession'] },
       },
     }));
     // SSM read for CloudFront domain (using name pattern to avoid circular dependency)
@@ -1971,6 +2036,8 @@ function handler(event) {
         'elasticloadbalancing:DescribeTargetGroups',
         'elasticloadbalancing:DescribeRules',
         'elasticloadbalancing:DescribeTargetHealth',
+        // Orphan reconciliation only deletes target groups tagged ManagedBy this stack.
+        'elasticloadbalancing:DescribeTags',
       ],
       resources: ['*'],
     }));
@@ -2015,7 +2082,6 @@ function handler(event) {
     const sessionIdResource = sessionResource.addResource('{id}');
     const heartbeatResource = sessionIdResource.addResource('heartbeat');
     const inviteResource = sessionIdResource.addResource('invite');
-    const bindResource = sessionIdResource.addResource('bind');
 
     const sessionLambdaIntegration = new apigateway.LambdaIntegration(sessionManagerLambda);
     const sessionAuthOptions = {
@@ -2033,7 +2099,8 @@ function handler(event) {
     // one rather than as a later addition.
     inviteResource.addMethod('DELETE', sessionLambdaIntegration, sessionAuthOptions);
     joinResource.addMethod('POST', sessionLambdaIntegration, sessionAuthOptions);
-    bindResource.addMethod('POST', sessionLambdaIntegration, sessionAuthOptions);
+    // No /session/{id}/bind: routing derives only from the task the session
+    // manager assigned, never from an address a client reports.
 
     // Throttle session creation to prevent warm pool exhaustion
     restApi.addUsagePlan('SessionCreationThrottle', {
@@ -2080,9 +2147,8 @@ function handler(event) {
       environment: {
         SHARES_TABLE_NAME: sharedSitesTable.table.tableName,
         SHARED_SITES_BUCKET: sharedSitesBucket.bucket.bucketName,
-        SHARED_SITES_DOMAIN: config.customDomain
-          ? `https://${config.customDomain}`
-          : '',
+        // Share links are minted on the untrusted origin, never the app's.
+        SHARED_SITES_DOMAIN: untrustedContent.sharedSitesOrigin,
         CLOUDFRONT_DOMAIN_PARAM: `/${stackPrefix}/cloudfront/domain-name`,
       },
     });
@@ -2146,10 +2212,12 @@ function handler(event) {
     }));
 
     // Redeeming an invite grants the inviter's project as well as their sandbox, so
-    // the session manager writes the membership item. Granted here rather than at
-    // its declaration because the table is defined further down.
+    // the session manager writes the membership item, and revoking the invite
+    // deletes it. It also reads the project's META item, because an invite may only
+    // carry a project its minter owns. Granted here rather than at its declaration
+    // because the table is defined further down.
     sessionManagerLambda.addEnvironment('PROJECTS_TABLE_NAME', projectsTable.table.tableName);
-    projectsTable.table.grantWriteData(sessionManagerLambda);
+    projectsTable.table.grantReadWriteData(sessionManagerLambda);
 
     const projectsResource = restApi.root.addResource('projects');
     const projectIdResource = projectsResource.addResource('{id}');

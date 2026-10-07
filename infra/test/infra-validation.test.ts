@@ -88,7 +88,9 @@ describe('Infrastructure Validation Tests', () => {
 
   describe('CloudFront', () => {
     test('CloudFront distribution exists', () => {
-      template.resourceCountIs('AWS::CloudFront::Distribution', 1);
+      // The app distribution plus the separate untrusted-content distribution
+      // that serves live previews and shared sites.
+      template.resourceCountIs('AWS::CloudFront::Distribution', 2);
     });
 
     test('CloudFront has security headers policy', () => {
