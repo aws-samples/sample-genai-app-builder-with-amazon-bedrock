@@ -2,17 +2,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionClient } from '~/lib/api/session-client';
 
 /**
- * The SessionClient resolves headers through the active auth strategy; mock the
- * factory so getHeaders is a spy we can inspect for the forceRefresh flag.
+ * The SessionClient resolves headers through ApiClientBase, which reads the
+ * Cognito id-token from Amplify. Mock fetchAuthSession so each call can be
+ * inspected for the forceRefresh flag, and adapt it to the header shape the
+ * assertions below expect.
  */
 const getHeaders = vi.fn();
 
-vi.mock('~/lib/auth', () => ({
-  getAuthStrategy: async () => ({
-    getHeaders,
-    getUserId: async () => 'owner-sub',
-  }),
-  isInternalAuthHost: () => false,
+vi.mock('aws-amplify/auth', () => ({
+  fetchAuthSession: async (options?: { forceRefresh?: boolean }) => {
+    const headers = await getHeaders({ forceRefresh: Boolean(options?.forceRefresh) });
+    const token = headers.Authorization.replace(/^Bearer /, '');
+
+    return { tokens: { idToken: { toString: () => token } } };
+  },
 }));
 
 vi.mock('~/lib/api/user-id', () => ({
