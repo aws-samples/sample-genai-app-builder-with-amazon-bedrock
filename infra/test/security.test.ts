@@ -112,3 +112,103 @@ describe('Security Tests', () => {
     }
   });
 });
+
+/**
+ * The sandbox WebSocket exposes a shell, so the upgrade must be authorised by an
+ * AWS-managed control: CloudFront signed URLs against a trusted key group. These
+ * pin that no bespoke ticket mechanism remains and that no unsigned path to the
+ * sandbox ALB exists — including through the preview distribution.
+ */
+describe('Sandbox WebSocket authorisation', () => {
+  const synth = (config: Record<string, unknown>) => {
+    const app = new cdk.App();
+    const stack = new InfraStack(app, 'TestStack', {
+      config: { ...testConfig, ...config } as any,
+      env: { account: '123456789012', region: 'us-west-2' },
+    });
+    return Template.fromStack(stack);
+  };
+
+  const templates = {
+    'without a custom domain': synth({}),
+    'with a custom domain (preview distribution)': synth({ customDomain: 'vibe.example.dev' }),
+  };
+
+  describe.each(Object.entries(templates))('%s', (_label, template) => {
+    const wsBehaviors = () =>
+      Object.values(template.findResources('AWS::CloudFront::Distribution')).flatMap(
+        (dist: any) =>
+          (dist.Properties.DistributionConfig.CacheBehaviors ?? []).filter(
+            (behavior: any) => behavior.PathPattern === '/ws/*',
+          ),
+      );
+
+    test('every /ws/* behavior requires a signed URL from the trusted key group', () => {
+      expect(wsBehaviors().length).toBeGreaterThan(0);
+
+      for (const behavior of wsBehaviors()) {
+        expect(behavior.TrustedKeyGroups).toHaveLength(1);
+      }
+    });
+
+    test('no distribution can reach the sandbox socket through its default behavior', () => {
+      // A default behavior pointing at the sandbox ALB would serve /ws/* unsigned
+      // if no /ws/* behavior shadowed it.
+      for (const dist of Object.values(template.findResources('AWS::CloudFront::Distribution')) as any[]) {
+        const config = dist.Properties.DistributionConfig;
+        const hasWsBehavior = (config.CacheBehaviors ?? []).some((b: any) => b.PathPattern === '/ws/*');
+        const defaultOrigin = config.Origins.find((o: any) => o.Id === config.DefaultCacheBehavior.TargetOriginId);
+        const defaultIsAlb = JSON.stringify(defaultOrigin.DomainName).includes('SandboxAlb');
+
+        if (defaultIsAlb) {
+          expect(hasWsBehavior).toBe(true);
+        }
+      }
+    });
+
+    test('a CloudFront key group and public key exist for signing', () => {
+      template.resourceCountIs('AWS::CloudFront::KeyGroup', 1);
+      template.resourceCountIs('AWS::CloudFront::PublicKey', 1);
+    });
+
+    test('no custom WebSocket ticket secret remains', () => {
+      const secrets = JSON.stringify(template.findResources('AWS::SecretsManager::Secret'));
+      expect(secrets).not.toMatch(/ws-ticket/i);
+      expect(JSON.stringify(template.toJSON())).not.toMatch(/WS_TICKET/);
+    });
+
+    test('the sandbox container is given no signing material', () => {
+      const taskDefs = Object.values(template.findResources('AWS::ECS::TaskDefinition')) as any[];
+
+      for (const taskDef of taskDefs) {
+        for (const container of taskDef.Properties.ContainerDefinitions) {
+          expect(container.Secrets ?? []).toEqual([]);
+        }
+      }
+    });
+
+    test('the session manager signs with the CloudFront key pair', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Environment: {
+          Variables: Match.objectLike({
+            WS_SIGNING_KEY_SECRET_ARN: Match.anyValue(),
+            WS_SIGNING_KEY_PAIR_ID: Match.anyValue(),
+            X_ORIGIN_VERIFY_SECRET_ARN: Match.anyValue(),
+          }),
+        },
+      });
+    });
+
+    test('every CloudFront origin pointing at the sandbox ALB sends the origin-verify header', () => {
+      for (const dist of Object.values(template.findResources('AWS::CloudFront::Distribution')) as any[]) {
+        for (const origin of dist.Properties.DistributionConfig.Origins) {
+          if (JSON.stringify(origin.DomainName).includes('SandboxAlb')) {
+            expect(origin.OriginCustomHeaders).toEqual(
+              expect.arrayContaining([expect.objectContaining({ HeaderName: 'X-Origin-Verify' })]),
+            );
+          }
+        }
+      }
+    });
+  });
+});
