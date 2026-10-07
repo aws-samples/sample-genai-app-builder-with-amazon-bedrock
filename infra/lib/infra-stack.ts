@@ -1752,11 +1752,11 @@ exports.handler = async () => {
       originVerifyHeaderValue,
     });
 
-    // Preview proxy: wildcard cert + CloudFront + Route53 for *.preview.vibe.proserve.aws.dev
+    // Preview proxy: wildcard cert + CloudFront + Route53 for *.preview.<customDomain>
     if (config.customDomain && hostedZone) {
       const previewDomain = `preview.${config.customDomain}`;
 
-      // Wildcard SSL cert for *.preview.vibe.proserve.aws.dev (must be us-east-1 for CloudFront)
+      // Wildcard SSL cert for *.preview.<customDomain> (must be us-east-1 for CloudFront)
       const previewCertificate = new acm.DnsValidatedCertificate(this, 'PreviewCertificate', {
         domainName: `*.${previewDomain}`,
         hostedZone,
@@ -1795,7 +1795,7 @@ exports.handler = async () => {
         httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
       });
 
-      // Wildcard DNS record: *.preview.vibe.proserve.aws.dev → Preview CloudFront
+      // Wildcard DNS record: *.preview.<customDomain> → Preview CloudFront
       new route53.ARecord(this, 'PreviewARecord', {
         zone: hostedZone,
         recordName: `*.${previewDomain}`,
