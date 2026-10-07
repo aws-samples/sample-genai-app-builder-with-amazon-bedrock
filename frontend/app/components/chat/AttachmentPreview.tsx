@@ -15,7 +15,7 @@ export function AttachmentPreview({ attachments }: AttachmentPreviewProps) {
       {attachments.map((attachment, index) => (
         <div
           key={index}
-          className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 bg-bolt-elements-background-depth-3 border border-bolt-elements-borderColor"
+          className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 bg-vibe-elements-background-depth-3 border border-vibe-elements-borderColor"
         >
           {attachment.type === 'image' && attachment.thumbnailDataUrl ? (
             <img
@@ -30,15 +30,15 @@ export function AttachmentPreview({ attachments }: AttachmentPreviewProps) {
                   ? 'i-ph:file-pdf text-red-400'
                   : attachment.mimeType.includes('wordprocessingml')
                     ? 'i-ph:file-doc text-blue-400'
-                    : 'i-ph:file-text text-bolt-elements-textSecondary'
+                    : 'i-ph:file-text text-vibe-elements-textSecondary'
               }`}
             />
           )}
           <div className="flex flex-col min-w-0">
-            <span className="text-bolt-elements-textPrimary truncate max-w-[150px] text-xs">
+            <span className="text-vibe-elements-textPrimary truncate max-w-[150px] text-xs">
               {attachment.name}
             </span>
-            <span className="text-bolt-elements-textTertiary text-[10px]">
+            <span className="text-vibe-elements-textTertiary text-[10px]">
               {formatFileSize(attachment.size)}
             </span>
           </div>

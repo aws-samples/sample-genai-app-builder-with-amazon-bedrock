@@ -91,7 +91,7 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
         ref={ref}
         className={classNames(
           styles.BaseChat,
-          'relative flex h-full w-full overflow-hidden bg-bolt-elements-background-depth-1',
+          'relative flex h-full w-full overflow-hidden bg-vibe-elements-background-depth-1',
         )}
         data-chat-visible={showChat}
       >
@@ -101,16 +101,16 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
             {!chatStarted && (
               <div id="intro" className="mt-20 max-w-chat mx-auto">
                 <img src="/bedrock_vibe.png" alt="Bedrock Vibe Logo" className="mx-auto mb-4 w-64" />
-                <h1 className="text-5xl text-center font-bold text-bolt-elements-textPrimary mb-2">
+                <h1 className="text-5xl text-center font-bold text-vibe-elements-textPrimary mb-2">
                   Where ideas begin
                 </h1>
-                <p className="mb-4 text-center text-bolt-elements-textSecondary">
+                <p className="mb-4 text-center text-vibe-elements-textSecondary">
                   Bring ideas to life in seconds or get help on existing projects.
                 </p>
                 <div className="mb-6 flex justify-center">
                   <Link
                     to="/brand-templates"
-                    className="inline-flex items-center gap-1.5 rounded-full border border-bolt-elements-borderColor bg-bolt-elements-background-depth-2 px-3 py-1 text-xs text-bolt-elements-textSecondary transition-colors hover:border-bolt-elements-focus hover:text-bolt-elements-textPrimary"
+                    className="inline-flex items-center gap-1.5 rounded-full border border-vibe-elements-borderColor bg-vibe-elements-background-depth-2 px-3 py-1 text-xs text-vibe-elements-textSecondary transition-colors hover:border-vibe-elements-focus hover:text-vibe-elements-textPrimary"
                   >
                     <span className="i-ph:paint-brush-broad text-sm" />
                     Manage brand templates
@@ -147,7 +147,7 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
                 >
                   <div
                     className={classNames(
-                      'shadow-sm border border-bolt-elements-borderColor bg-bolt-elements-prompt-background backdrop-filter backdrop-blur-[8px] rounded-lg',
+                      'shadow-sm border border-vibe-elements-borderColor bg-vibe-elements-prompt-background backdrop-filter backdrop-blur-[8px] rounded-lg',
                     )}
                   >
                     {hasAttachments && (
@@ -179,7 +179,7 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
                       </div>
                       <textarea
                         ref={textareaRef}
-                        className={`w-full pl-2 pt-4 pr-16 focus:outline-none resize-none text-md text-bolt-elements-textPrimary placeholder-bolt-elements-textTertiary bg-transparent`}
+                        className={`w-full pl-2 pt-4 pr-16 focus:outline-none resize-none text-md text-vibe-elements-textPrimary placeholder-vibe-elements-textTertiary bg-transparent`}
                         onKeyDown={(event) => {
                           if (event.key === 'Enter') {
                             if (event.shiftKey) {
@@ -224,7 +224,7 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
                         <select
                           value={currentModelId}
                           onChange={(e) => selectedModelId.set(e.target.value)}
-                          className="px-2 py-1 text-sm rounded border-0 bg-transparent text-bolt-elements-textSecondary hover:text-bolt-elements-textPrimary focus:outline-none cursor-pointer transition-all"
+                          className="px-2 py-1 text-sm rounded border-0 bg-transparent text-vibe-elements-textSecondary hover:text-vibe-elements-textPrimary focus:outline-none cursor-pointer transition-all"
                           title="Select AI Model"
                         >
                           {AVAILABLE_MODELS.map((model) => (
@@ -235,15 +235,15 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
                         </select>
                       </div>
                       {input.length > 3 ? (
-                        <div className="text-xs text-bolt-elements-textTertiary">
+                        <div className="text-xs text-vibe-elements-textTertiary">
                           Use <kbd className="kdb">Shift</kbd> + <kbd className="kdb">Return</kbd> for a new line
                         </div>
                       ) : null}
                     </div>
                   </div>
                 </FileDropZone>
-                <div className="bg-bolt-elements-background-depth-1 pb-6">{/* Ghost Element */}</div>
-                <p className="text-xs text-center text-bolt-elements-textTertiary pb-2">
+                <div className="bg-vibe-elements-background-depth-1 pb-6">{/* Ghost Element */}</div>
+                <p className="text-xs text-center text-vibe-elements-textTertiary pb-2">
                   Note: Please do not upload or include any customer data in your prompts.
                 </p>
               </div>
@@ -258,7 +258,7 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
                         onClick={(event) => {
                           sendMessage?.(event, examplePrompt.text);
                         }}
-                        className="group flex items-center w-full gap-2 justify-center bg-transparent text-bolt-elements-textTertiary hover:text-bolt-elements-textPrimary transition-theme"
+                        className="group flex items-center w-full gap-2 justify-center bg-transparent text-vibe-elements-textTertiary hover:text-vibe-elements-textPrimary transition-theme"
                       >
                         {examplePrompt.text}
                         <div className="i-ph:arrow-bend-down-left" />

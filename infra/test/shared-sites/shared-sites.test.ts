@@ -26,6 +26,34 @@ describe('SharedSitesBucket', () => {
     });
   });
 
+  test('S3 bucket allows browser PUT uploads via CORS', () => {
+    // publishing uploads built files straight from the browser to presigned
+    // PUT URLs; without this rule the browser blocks the upload at preflight
+    template.hasResourceProperties('AWS::S3::Bucket', {
+      CorsConfiguration: {
+        CorsRules: Match.arrayWith([
+          Match.objectLike({
+            AllowedMethods: Match.arrayWith(['PUT']),
+            AllowedOrigins: ['*'],
+          }),
+        ]),
+      },
+    });
+  });
+
+  test('CORS does not make the bucket public', () => {
+    // CORS governs browser fetch/PUT, not public readability — the block-all
+    // public access config must remain intact alongside it
+    template.hasResourceProperties('AWS::S3::Bucket', {
+      PublicAccessBlockConfiguration: {
+        BlockPublicAcls: true,
+        BlockPublicPolicy: true,
+        IgnorePublicAcls: true,
+        RestrictPublicBuckets: true,
+      },
+    });
+  });
+
   test('S3 bucket has 30-day lifecycle rule for shared/ prefix', () => {
     template.hasResourceProperties('AWS::S3::Bucket', {
       LifecycleConfiguration: {

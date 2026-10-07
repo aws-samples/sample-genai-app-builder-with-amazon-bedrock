@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react';
 import { motion, type HTMLMotionProps, type Variants } from 'framer-motion';
 import { computed } from 'nanostores';
-import { memo, useCallback, useEffect } from 'react';
+import { memo, useCallback, useEffect, useRef } from 'react';
 import { toast } from 'react-toastify';
 import {
   type OnChangeCallback as OnEditorChange,
@@ -16,8 +16,10 @@ import { cubicEasingFn } from '~/utils/easings';
 import { renderLogger } from '~/utils/logger';
 import { DownloadButton } from './DownloadButton';
 import { ShareButton } from './ShareButton';
+import { LiveShareButton } from './LiveShareButton';
 import { EditorPanel } from './EditorPanel';
 import { Preview } from './Preview';
+import { SessionConnecting } from './SessionConnecting';
 
 interface WorkspaceProps {
   chatStarted?: boolean;
@@ -69,8 +71,19 @@ export const Workbench = memo(({ chatStarted, isStreaming }: WorkspaceProps) => 
     workbenchStore.currentView.set(view);
   };
 
+  /**
+   * Auto-reveal the preview once, the first time one becomes available. It used
+   * to run on every `hasPreview` change, which yanked the user back to Preview
+   * whenever the dev server re-opened a port — and because "Go live" / "Invite"
+   * only render in the Code tab, that made them impossible to keep on screen. A
+   * one-shot latch shows the preview on first build but then respects whichever
+   * tab the user (or a collaborator going live) is on.
+   */
+  const autoRevealedPreview = useRef(false);
+
   useEffect(() => {
-    if (hasPreview) {
+    if (hasPreview && !autoRevealedPreview.current) {
+      autoRevealedPreview.current = true;
       setSelectedView('preview');
     }
   }, [hasPreview]);
@@ -111,7 +124,7 @@ export const Workbench = memo(({ chatStarted, isStreaming }: WorkspaceProps) => 
       >
         <div
           className={classNames(
-            'fixed top-[calc(var(--header-height)+1.5rem)] bottom-6 w-[var(--workbench-inner-width)] mr-4 z-0 transition-[left,width] duration-200 bolt-ease-cubic-bezier',
+            'fixed top-[calc(var(--header-height)+1.5rem)] bottom-6 w-[var(--workbench-inner-width)] mr-4 z-0 transition-[left,width] duration-200 vibe-ease-cubic-bezier',
             {
               'left-[var(--workbench-left)]': showWorkbench,
               'left-[100%]': !showWorkbench,
@@ -119,12 +132,14 @@ export const Workbench = memo(({ chatStarted, isStreaming }: WorkspaceProps) => 
           )}
         >
           <div className="absolute inset-0 px-6">
-            <div className="h-full flex flex-col bg-bolt-elements-background-depth-2 border border-bolt-elements-borderColor shadow-sm rounded-lg overflow-hidden">
-              <div className="flex items-center px-3 py-2 border-b border-bolt-elements-borderColor">
+            <div className="h-full flex flex-col bg-vibe-elements-background-depth-2 border border-vibe-elements-borderColor shadow-sm rounded-lg overflow-hidden">
+              <div className="flex items-center px-3 py-2 border-b border-vibe-elements-borderColor">
                 <Slider selected={selectedView} options={sliderOptions} setSelected={setSelectedView} />
                 <div className="ml-auto" />
                 <DownloadButton className="mr-1 text-sm" />
                 <ShareButton />
+                {/* collab controls stay reachable in both tabs; gating to Code hid them once the preview auto-opened */}
+                <LiveShareButton />
                 {selectedView === 'code' && (
                   <PanelHeaderButton
                     className="mr-1 text-sm"
@@ -146,6 +161,7 @@ export const Workbench = memo(({ chatStarted, isStreaming }: WorkspaceProps) => 
                 />
               </div>
               <div className="relative flex-1 overflow-hidden">
+                <SessionConnecting />
                 <View
                   initial={{ x: selectedView === 'code' ? 0 : '-100%' }}
                   animate={{ x: selectedView === 'code' ? 0 : '-100%' }}

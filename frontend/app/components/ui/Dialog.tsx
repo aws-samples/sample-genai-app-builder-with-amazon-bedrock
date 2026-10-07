@@ -52,11 +52,11 @@ export const DialogButton = memo(({ type, children, onClick }: DialogButtonProps
       className={classNames(
         'inline-flex h-[35px] items-center justify-center rounded-lg px-4 text-sm leading-none focus:outline-none',
         {
-          'bg-bolt-elements-button-primary-background text-bolt-elements-button-primary-text hover:bg-bolt-elements-button-primary-backgroundHover':
+          'bg-vibe-elements-button-primary-background text-vibe-elements-button-primary-text hover:bg-vibe-elements-button-primary-backgroundHover':
             type === 'primary',
-          'bg-bolt-elements-button-secondary-background text-bolt-elements-button-secondary-text hover:bg-bolt-elements-button-secondary-backgroundHover':
+          'bg-vibe-elements-button-secondary-background text-vibe-elements-button-secondary-text hover:bg-vibe-elements-button-secondary-backgroundHover':
             type === 'secondary',
-          'bg-bolt-elements-button-danger-background text-bolt-elements-button-danger-text hover:bg-bolt-elements-button-danger-backgroundHover':
+          'bg-vibe-elements-button-danger-background text-vibe-elements-button-danger-text hover:bg-vibe-elements-button-danger-backgroundHover':
             type === 'danger',
         },
       )}
@@ -71,7 +71,7 @@ export const DialogTitle = memo(({ className, children, ...props }: RadixDialog.
   return (
     <RadixDialog.Title
       className={classNames(
-        'px-5 py-4 flex items-center justify-between border-b border-bolt-elements-borderColor text-lg font-semibold leading-6 text-bolt-elements-textPrimary',
+        'px-5 py-4 flex items-center justify-between border-b border-vibe-elements-borderColor text-lg font-semibold leading-6 text-vibe-elements-textPrimary',
         className,
       )}
       {...props}
@@ -84,7 +84,7 @@ export const DialogTitle = memo(({ className, children, ...props }: RadixDialog.
 export const DialogDescription = memo(({ className, children, ...props }: RadixDialog.DialogDescriptionProps) => {
   return (
     <RadixDialog.Description
-      className={classNames('px-5 py-4 text-bolt-elements-textPrimary text-md', className)}
+      className={classNames('px-5 py-4 text-vibe-elements-textPrimary text-md', className)}
       {...props}
     >
       {children}
@@ -114,7 +114,7 @@ export const Dialog = memo(({ className, children, onBackdrop, onClose }: Dialog
       <RadixDialog.Content asChild>
         <motion.div
           className={classNames(
-            'fixed top-[50%] left-[50%] z-max max-h-[85vh] w-[90vw] max-w-[450px] translate-x-[-50%] translate-y-[-50%] border border-bolt-elements-borderColor rounded-lg bg-bolt-elements-background-depth-2 shadow-lg focus:outline-none overflow-hidden',
+            'fixed top-[50%] left-[50%] z-max max-h-[85vh] w-[90vw] max-w-[450px] translate-x-[-50%] translate-y-[-50%] border border-vibe-elements-borderColor rounded-lg bg-vibe-elements-background-depth-2 shadow-lg focus:outline-none overflow-hidden',
             className,
           )}
           initial="closed"

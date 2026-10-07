@@ -54,7 +54,7 @@ function BrandTemplatesIndex() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-bolt-elements-background-depth-1">
+    <div className="flex min-h-screen flex-col bg-vibe-elements-background-depth-1">
       <GlobalHeader />
       <main className="flex-1 pt-16">
         {pendingJobId ? (
@@ -68,7 +68,7 @@ function BrandTemplatesIndex() {
             />
           </div>
         ) : loading ? (
-          <div className="flex min-h-[60vh] items-center justify-center text-sm text-bolt-elements-textSecondary">
+          <div className="flex min-h-[60vh] items-center justify-center text-sm text-vibe-elements-textSecondary">
             Loading skills…
           </div>
         ) : loadError ? (

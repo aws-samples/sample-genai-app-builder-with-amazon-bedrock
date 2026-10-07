@@ -65,28 +65,28 @@ export function BrandTemplatePicker({
 
   return (
     <div
-      className={`absolute bottom-full left-0 mb-2 w-72 overflow-hidden rounded-lg border border-bolt-elements-borderColor bg-bolt-elements-background-depth-2 ${anchorClassName ?? ''}`}
+      className={`absolute bottom-full left-0 mb-2 w-72 overflow-hidden rounded-lg border border-vibe-elements-borderColor bg-vibe-elements-background-depth-2 ${anchorClassName ?? ''}`}
     >
-      <div className="border-b border-bolt-elements-borderColor p-2">
+      <div className="border-b border-vibe-elements-borderColor p-2">
         <input
           ref={inputRef}
           type="text"
           placeholder="Search brand templates…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          className="w-full rounded border border-transparent bg-bolt-elements-background-depth-3 px-2 py-1.5 text-sm text-bolt-elements-textPrimary placeholder:text-bolt-elements-textTertiary transition-colors focus:border-bolt-elements-focus focus:outline-none"
+          className="w-full rounded border border-transparent bg-vibe-elements-background-depth-3 px-2 py-1.5 text-sm text-vibe-elements-textPrimary placeholder:text-vibe-elements-textTertiary transition-colors focus:border-vibe-elements-focus focus:outline-none"
         />
       </div>
 
       <div className="max-h-64 overflow-y-auto">
         {loading ? (
-          <p className="px-4 py-3 text-sm text-bolt-elements-textSecondary">
+          <p className="px-4 py-3 text-sm text-vibe-elements-textSecondary">
             Loading…
           </p>
         ) : error ? (
           <p className="px-4 py-3 text-sm text-red-400">{error}</p>
         ) : filtered.length === 0 ? (
-          <p className="px-4 py-3 text-sm text-bolt-elements-textSecondary">
+          <p className="px-4 py-3 text-sm text-vibe-elements-textSecondary">
             {skills && skills.length === 0
               ? 'No brand templates yet.'
               : 'No matches.'}
@@ -101,14 +101,14 @@ export function BrandTemplatePicker({
                     onSelect(s.skillId);
                     onClose();
                   }}
-                  className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-bolt-elements-background-depth-3"
+                  className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-vibe-elements-background-depth-3"
                 >
                   <SwatchBand colors={s.previewColors} />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-xs font-medium text-bolt-elements-textPrimary">
+                    <p className="truncate text-xs font-medium text-vibe-elements-textPrimary">
                       {s.name}
                     </p>
-                    <p className="truncate text-[10px] text-bolt-elements-textTertiary">
+                    <p className="truncate text-[10px] text-vibe-elements-textTertiary">
                       {s.styleDescriptorLabel || '—'}
                     </p>
                   </div>
@@ -119,14 +119,14 @@ export function BrandTemplatePicker({
         )}
       </div>
 
-      <div className="border-t border-bolt-elements-borderColor">
+      <div className="border-t border-vibe-elements-borderColor">
         <button
           type="button"
           onClick={() => {
             onClose();
             navigate('/brand-templates');
           }}
-          className="flex w-full items-center gap-2 px-3 py-2 text-sm text-bolt-elements-textSecondary transition-colors hover:bg-bolt-elements-background-depth-3 hover:text-bolt-elements-textPrimary"
+          className="flex w-full items-center gap-2 px-3 py-2 text-sm text-vibe-elements-textSecondary transition-colors hover:bg-vibe-elements-background-depth-3 hover:text-vibe-elements-textPrimary"
         >
           <div className="i-ph:gear text-sm" />
           Manage skills
@@ -140,11 +140,11 @@ function SwatchBand({ colors }: { colors: string[] }) {
   const shown = (colors || []).slice(0, 5);
   if (shown.length === 0) {
     return (
-      <div className="h-6 w-12 shrink-0 rounded border border-bolt-elements-borderColor bg-bolt-elements-background-depth-3" />
+      <div className="h-6 w-12 shrink-0 rounded border border-vibe-elements-borderColor bg-vibe-elements-background-depth-3" />
     );
   }
   return (
-    <div className="flex h-6 w-12 shrink-0 overflow-hidden rounded border border-bolt-elements-borderColor">
+    <div className="flex h-6 w-12 shrink-0 overflow-hidden rounded border border-vibe-elements-borderColor">
       {shown.map((hex, idx) => (
         <div
           key={`${hex}-${idx}`}

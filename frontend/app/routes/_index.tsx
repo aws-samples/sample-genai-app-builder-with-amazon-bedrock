@@ -6,7 +6,7 @@ import { Header } from '~/components/header/Header';
 import GlobalHeader from '~/components/header/GlobalHeader';
 
 export const meta: MetaFunction = () => {
-  return [{ title: 'Bedrock Vibe' }, { name: 'description', content: 'Talk with Bedrock Vibe, an AI assistant from the AWS Generative AI Innovation Centre' }];
+  return [{ title: 'Bedrock Vibe' }, { name: 'description', content: 'Talk with Bedrock Vibe, an AI assistant from AWS Forward Deployed Engineering' }];
 };
 
 export const loader = () => {

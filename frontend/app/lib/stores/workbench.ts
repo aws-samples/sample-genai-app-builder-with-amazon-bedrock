@@ -2,7 +2,8 @@ import { atom, map, type MapStore, type ReadableAtom, type WritableAtom } from '
 import type { EditorDocument, ScrollPosition } from '~/components/editor/codemirror/CodeMirrorEditor';
 import { ActionRunner } from '~/lib/runtime/action-runner';
 import type { ActionCallbackData, ArtifactCallbackData } from '~/lib/runtime/message-parser';
-import { getRuntimePromise } from '~/lib/runtime';
+import { getConnection } from '~/lib/runtime';
+import { seedTemplate } from '~/lib/runtime/seed-template';
 import type { ITerminal } from '~/types/terminal';
 import { createScopedLogger } from '~/utils/logger';
 import { EditorStore } from './editor';
@@ -27,11 +28,15 @@ type Artifacts = MapStore<Record<string, ArtifactState>>;
 export type WorkbenchViewType = 'code' | 'preview';
 
 export class WorkbenchStore {
-  #runtimePromise = getRuntimePromise();
-  #previewsStore = new PreviewsStore(this.#runtimePromise);
-  #filesStore = new FilesStore(this.#runtimePromise);
+  // A provider, not a captured promise: each store resolves a *healthy*
+  // connection per operation and transparently re-boots a dead one. Capturing a
+  // single promise at construction — before auth had hydrated — is what left the
+  // workbench wedged with red crosses when the first boot lost the race.
+  #connect = getConnection;
+  #previewsStore = new PreviewsStore(this.#connect);
+  #filesStore = new FilesStore(this.#connect);
   #editorStore = new EditorStore(this.#filesStore);
-  #terminalStore = new TerminalStore(this.#runtimePromise);
+  #terminalStore = new TerminalStore(this.#connect);
 
   artifacts: Artifacts = import.meta.hot?.data.artifacts ?? map({});
 
@@ -59,6 +64,10 @@ export class WorkbenchStore {
 
   get previewReloadKey() {
     return this.#previewsStore.reloadKey;
+  }
+
+  get previewBuildOutput() {
+    return this.#previewsStore.buildOutput;
   }
 
   get files() {
@@ -98,7 +107,8 @@ export class WorkbenchStore {
   }
 
   setDocuments(files: FileMap) {
-    this.#editorStore.setDocuments(files);
+    // Dirty buffers are named so the rebuild does not overwrite them from disk.
+    this.#editorStore.setDocuments(files, this.unsavedFiles.get());
 
     if (this.#filesStore.filesCount > 0 && this.currentDocument.get() === undefined) {
       // we find the first file and select it
@@ -180,6 +190,33 @@ export class WorkbenchStore {
     this.unsavedFiles.set(newUnsavedFiles);
   }
 
+  /**
+   * Persist content that came from somewhere other than the local editor buffer.
+   *
+   * {@link saveFile} writes whatever the editor store holds for a path, which is
+   * only the co-edited content when that file happens to be the one on screen. A
+   * collaborator's edit to any other file lives solely in the shared CRDT, so it has
+   * to be written from there — see `collab/collab-autosave.ts`.
+   *
+   * The buffer is updated to match, so the editor and disk do not then disagree, and
+   * the path stops counting as unsaved because disk now holds it.
+   */
+  async saveFileContent(filePath: string, content: string) {
+    await this.#filesStore.saveFile(filePath, content);
+
+    this.#editorStore.updateFile(filePath, content);
+
+    const newUnsavedFiles = new Set(this.unsavedFiles.get());
+    newUnsavedFiles.delete(filePath);
+
+    this.unsavedFiles.set(newUnsavedFiles);
+  }
+
+  /** The container's current content for a path, or undefined if it has no such file. */
+  diskContent(filePath: string): string | undefined {
+    return this.#filesStore.getFile(filePath)?.content;
+  }
+
   async saveCurrentDocument() {
     const currentDocument = this.currentDocument.get();
 
@@ -232,16 +269,23 @@ export class WorkbenchStore {
       return;
     }
 
-    // Clear stale previews from a previous chat session so the
-    // preview pane shows a "Building..." spinner instead of 502.
-    this.#previewsStore.reset();
+    // Reconcile the preview against the container rather than clearing it.
+    //
+    // This used to be an unconditional `reset()`, which meant every follow-up
+    // prompt blanked a working preview: the container announces a port only on
+    // the transition into listening, so a dev server that was already up was
+    // never re-announced and the pane sat on "Building your project..." forever
+    // in front of an app that was serving fine. Asking which ports are listening
+    // still drops a genuinely stale preview from a previous session — the 502
+    // this was reaching for — without discarding a live one.
+    void this.#previewsStore.onArtifactStart();
 
     if (!this.artifactIdList.includes(messageId)) {
       this.artifactIdList.push(messageId);
     }
 
     // Create the artifact with a runner first
-    const runner = new ActionRunner(this.#runtimePromise);
+    const runner = new ActionRunner(this.#connect);
     runner.onDevServerStart((cmd) => this.#previewsStore.setLastDevServerCommand(cmd));
     const artifactWithRunner = {
       id,
@@ -256,13 +300,28 @@ export class WorkbenchStore {
     // If this is the first artifact, apply the project template if enabled
     if (this.#isFirstArtifact) {
       this.#isFirstArtifact = false;
-      
+
       // Check if template is enabled in settings
       const enableTemplate = templateSettingsStore.enableTemplate.get();
-      
+
       if (enableTemplate) {
-        logger.debug('First artifact detected and template is enabled');
-        // Template is baked into the Docker image — no runtime copy needed
+        logger.debug('First artifact detected and template is enabled — seeding react-starter-pack');
+
+        // Seed the react-starter-pack tree into the workdir at runtime (bundled
+        // with the frontend, written over the fs API — NOT baked into the
+        // Docker image). Gate the action runner on it so the agent's own file
+        // writes, which edit the same paths (main-page.tsx, package.json, …),
+        // land on top of the seeded skeleton rather than racing it.
+        const seedPromise = this.#connect()
+          .then((conn) => seedTemplate(conn))
+          .then((result) => {
+            logger.info(`Template seed complete: ${result.written}/${result.total} files`);
+          })
+          .catch((err) => {
+            logger.error('Template seeding failed:', err);
+          });
+
+        runner.gateOn(seedPromise);
         this.setShowWorkbench(true);
       } else {
         logger.debug('First artifact detected but template is disabled, skipping template application');

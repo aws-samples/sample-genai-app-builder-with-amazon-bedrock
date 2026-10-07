@@ -25,6 +25,8 @@ import { BinaryContent } from './BinaryContent';
 import { getTheme, reconfigureTheme } from './cm-theme';
 import { indentKeyBinding } from './indent';
 import { getLanguage } from './languages';
+import type { CollabProvider } from '~/lib/collab/collab-provider';
+import { createCollabBinding } from '~/lib/collab/codemirror-collab';
 
 const logger = createScopedLogger('CodeMirrorEditor');
 
@@ -72,6 +74,13 @@ interface Props {
   onSave?: OnSaveCallback;
   className?: string;
   settings?: EditorSettings;
+  /**
+   * When present, the editor binds each open file to a shared Yjs document for
+   * real-time collaboration (live co-editing + remote cursors). When null/
+   * undefined the editor behaves exactly as the solo path — no Yjs, no
+   * awareness, and content is seeded from `doc.value` as usual.
+   */
+  collabProvider?: CollabProvider | null;
 }
 
 type EditorStates = Map<string, EditorState>;
@@ -129,10 +138,13 @@ export const CodeMirrorEditor = memo(
     theme,
     settings,
     className = '',
+    collabProvider,
   }: Props) => {
     renderLogger.trace('CodeMirrorEditor');
 
     const [languageCompartment] = useState(new Compartment());
+    const [collabCompartment] = useState(new Compartment());
+    const collabProviderRef = useRef<CollabProvider | null | undefined>(collabProvider);
 
     const containerRef = useRef<HTMLDivElement | null>(null);
     const viewRef = useRef<EditorView>();
@@ -153,6 +165,7 @@ export const CodeMirrorEditor = memo(
       onSaveRef.current = onSave;
       docRef.current = doc;
       themeRef.current = theme;
+      collabProviderRef.current = collabProvider;
     });
 
     useEffect(() => {
@@ -214,6 +227,7 @@ export const CodeMirrorEditor = memo(
       if (!doc) {
         const state = newEditorState('', theme, settings, onScrollRef, debounceScroll, onSaveRef, [
           languageCompartment.of([]),
+          collabCompartment.of([]),
         ]);
 
         view.setState(state);
@@ -231,14 +245,29 @@ export const CodeMirrorEditor = memo(
         logger.warn('File path should not be empty');
       }
 
-      let state = editorStates.get(doc.filePath);
+      const provider = collabProviderRef.current;
+
+      // Build the collaborative binding for this file when a provider is
+      // active. yCollab manages the document content off the shared Y.Text, so
+      // the manual value seed below is suppressed for collab-owned files.
+      const collabBinding =
+        provider && !doc.isBinary ? createCollabBinding(provider, doc.filePath, doc.value) : null;
+
+      // Collab editor states are NOT cached across file switches: the yCollab
+      // plugin instance is bound to a specific view lifecycle, so we rebuild a
+      // fresh state each time a collab file is (re)opened. Solo files keep the
+      // original per-file state cache for scroll/selection restoration.
+      let state = collabBinding ? undefined : editorStates.get(doc.filePath);
 
       if (!state) {
         state = newEditorState(doc.value, theme, settings, onScrollRef, debounceScroll, onSaveRef, [
           languageCompartment.of([]),
+          collabCompartment.of(collabBinding ? collabBinding.extension : []),
         ]);
 
-        editorStates.set(doc.filePath, state);
+        if (!collabBinding) {
+          editorStates.set(doc.filePath, state);
+        }
       }
 
       view.setState(state);
@@ -250,8 +279,11 @@ export const CodeMirrorEditor = memo(
         languageCompartment,
         autoFocusOnDocumentChange,
         doc as TextEditorDocument,
+        // When collab owns the document, do not overwrite its content from
+        // doc.value — Yjs is the source of truth and seeds it once.
+        collabBinding !== null,
       );
-    }, [doc?.value, editable, doc?.filePath, autoFocusOnDocumentChange]);
+    }, [doc?.value, editable, doc?.filePath, autoFocusOnDocumentChange, collabProvider]);
 
     return (
       <div className={classNames('relative h-full', className)}>
@@ -380,8 +412,13 @@ function setEditorDocument(
   languageCompartment: Compartment,
   autoFocus: boolean,
   doc: TextEditorDocument,
+  collabOwned = false,
 ) {
-  if (doc.value !== view.state.doc.toString()) {
+  // When a collaborative binding owns this document, Yjs is the source of
+  // truth: it seeds the shared text once and streams every subsequent change.
+  // Overwriting the content here would clobber remote edits and desync the
+  // CRDT, so the manual full-document replace is skipped for collab files.
+  if (!collabOwned && doc.value !== view.state.doc.toString()) {
     view.dispatch({
       selection: { anchor: 0 },
       changes: {

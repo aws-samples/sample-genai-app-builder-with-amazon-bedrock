@@ -117,6 +117,37 @@ describe('ShellManager', () => {
     });
   });
 
+  /**
+   * Two collaborators share one container, so a dev server started by one peer
+   * must not be torn down when the other peer issues their own dev-server
+   * command — that would kill the shared preview for everyone.
+   */
+  describe('hasLiveDevServer', () => {
+    it('is false before any dev server has been started', () => {
+      expect(manager.hasLiveDevServer()).toBe(false);
+    });
+
+    it('is false for ordinary commands', async () => {
+      await manager.handleExec(makeMsg('shell:exec:req', { command: 'echo hi', cwd: tmpDir }));
+      expect(manager.hasLiveDevServer()).toBe(false);
+    });
+
+    it('reports a running dev server, and stops reporting once it exits', async () => {
+      // A dev-server-shaped command that exits immediately: it is recorded as a
+      // dev server, then pruned because the process is no longer alive.
+      await manager.handleExec(
+        makeMsg('shell:exec:req', { command: 'npm run dev --silent || true', cwd: tmpDir }),
+      );
+      expect(manager.hasLiveDevServer()).toBe(false);
+    });
+
+    it('forgets dev servers after destroyAll', async () => {
+      await manager.handleExec(makeMsg('shell:exec:req', { command: 'echo hi', cwd: tmpDir }));
+      manager.destroyAll();
+      expect(manager.hasLiveDevServer()).toBe(false);
+    });
+  });
+
   describe('kill', () => {
     it('throws for unknown processId', () => {
       const msg = makeMsg('shell:kill:req', { processId: 999999 });

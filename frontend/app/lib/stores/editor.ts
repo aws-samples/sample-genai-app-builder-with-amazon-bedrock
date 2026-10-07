@@ -29,7 +29,21 @@ export class EditorStore {
     }
   }
 
-  setDocuments(files: FileMap) {
+  /**
+   * Rebuild the open documents from the container's file map.
+   *
+   * Called for every file event from the container, including ones for files
+   * nobody is looking at. Taking `value` from disk unconditionally therefore
+   * discarded any unsaved buffer whenever *anything* touched the container — a
+   * teammate saving another file, an AI turn, the dev server regenerating an asset
+   * — with no prompt and no undo entry.
+   *
+   * `unsavedPaths` names the buffers that must survive, and is carried forward the
+   * way `scroll` already is. It is optional so a caller with no notion of dirtiness
+   * keeps the old reconcile-everything behaviour; a path in it that no longer
+   * exists on disk is still dropped, since the file itself has gone.
+   */
+  setDocuments(files: FileMap, unsavedPaths?: ReadonlySet<string>) {
     const previousDocuments = this.documents.value;
 
     this.documents.set(
@@ -41,11 +55,12 @@ export class EditorStore {
             }
 
             const previousDocument = previousDocuments?.[filePath];
+            const keepBuffer = previousDocument !== undefined && unsavedPaths?.has(filePath);
 
             return [
               filePath,
               {
-                value: dirent.content,
+                value: keepBuffer ? previousDocument.value : dirent.content,
                 filePath,
                 scroll: previousDocument?.scroll,
               },

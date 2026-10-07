@@ -1,6 +1,7 @@
 import type { Message } from 'ai';
 import { createScopedLogger } from '~/utils/logger';
 import type { ChatHistoryItem } from './useChatHistory';
+import { pushChat, pullChat, pullChatList, deleteChat } from './sync';
 
 const logger = createScopedLogger('ChatHistory');
 
@@ -30,7 +31,30 @@ export async function openDatabase(): Promise<IDBDatabase | undefined> {
   });
 }
 
+/**
+ * Every chat this user can see, local and server-side merged.
+ *
+ * A device that has never opened a project still needs it in the sidebar, and a
+ * project created before this became server-backed only exists locally — so
+ * neither source alone is complete. Local wins on conflict because it is the more
+ * recently written copy in the common case.
+ */
 export async function getAll(db: IDBDatabase): Promise<ChatHistoryItem[]> {
+  const [local, remote] = await Promise.all([getAllLocal(db), pullChatList()]);
+  const byId = new Map<string, ChatHistoryItem>();
+
+  for (const item of remote) {
+    byId.set(item.id, item);
+  }
+
+  for (const item of local) {
+    byId.set(item.id, item);
+  }
+
+  return [...byId.values()];
+}
+
+function getAllLocal(db: IDBDatabase): Promise<ChatHistoryItem[]> {
   return new Promise((resolve, reject) => {
     const transaction = db.transaction('chats', 'readonly');
     const store = transaction.objectStore('chats');
@@ -48,6 +72,12 @@ export async function setMessages(
   urlId?: string,
   description?: string,
 ): Promise<void> {
+  // Mirror to the server so the chat is not confined to this browser. Not awaited:
+  // the local write below is what the UI depends on, and making every keystroke's
+  // save wait on a round trip would make the app feel worse for a guarantee the
+  // user cannot see. A failure is retried by the next save.
+  void pushChat({ id, messages, urlId, description });
+
   return new Promise((resolve, reject) => {
     const transaction = db.transaction('chats', 'readwrite');
     const store = transaction.objectStore('chats');
@@ -65,8 +95,59 @@ export async function setMessages(
   });
 }
 
+/**
+ * Load a chat by project id or url id.
+ *
+ * Local first, because the common case is reopening a project on the device that
+ * created it and that should not need the network. Falls back to the server, which
+ * is what lets a project appear on a second device, survive clearing browser data,
+ * and be readable by someone invited into the session. Anything fetched is written
+ * back locally so the next open is immediate.
+ */
 export async function getMessages(db: IDBDatabase, id: string): Promise<ChatHistoryItem> {
-  return (await getMessagesById(db, id)) || (await getMessagesByUrlId(db, id));
+  const local = (await getMessagesById(db, id)) || (await getMessagesByUrlId(db, id));
+
+  if (local?.messages?.length) {
+    return local;
+  }
+
+  const remote = await pullChat(id);
+
+  if (!remote) {
+    return local;
+  }
+
+  await cacheLocally(db, remote);
+
+  return remote;
+}
+
+/**
+ * Write a server-fetched chat into the local database.
+ *
+ * Uses a direct put rather than setMessages so it does not immediately push the
+ * same data back to the server it just came from.
+ */
+async function cacheLocally(db: IDBDatabase, item: ChatHistoryItem): Promise<void> {
+  return new Promise((resolve) => {
+    try {
+      const transaction = db.transaction('chats', 'readwrite');
+      const request = transaction.objectStore('chats').put({
+        id: item.id,
+        messages: item.messages,
+        urlId: item.urlId,
+        description: item.description,
+        timestamp: item.timestamp,
+      });
+
+      request.onsuccess = () => resolve();
+      request.onerror = () => resolve();
+    } catch {
+      // A cache write failing is not worth propagating — the caller already has
+      // the data it asked for.
+      resolve();
+    }
+  });
 }
 
 export async function getMessagesByUrlId(db: IDBDatabase, id: string): Promise<ChatHistoryItem> {
@@ -93,6 +174,10 @@ export async function getMessagesById(db: IDBDatabase, id: string): Promise<Chat
 }
 
 export async function deleteById(db: IDBDatabase, id: string): Promise<void> {
+  // Delete server-side too, or the chat would reappear in the sidebar on the next
+  // load from the merged list.
+  void deleteChat(id);
+
   return new Promise((resolve, reject) => {
     const transaction = db.transaction('chats', 'readwrite');
     const store = transaction.objectStore('chats');
@@ -103,19 +188,39 @@ export async function deleteById(db: IDBDatabase, id: string): Promise<void> {
   });
 }
 
-export async function getNextId(db: IDBDatabase): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction('chats', 'readonly');
-    const store = transaction.objectStore('chats');
-    const request = store.getAllKeys();
+export async function getNextId(): Promise<string> {
+  return newProjectId();
+}
 
-    request.onsuccess = () => {
-      const highestId = request.result.reduce((cur, acc) => Math.max(+cur, +acc), 0);
-      resolve(String(+highestId + 1));
-    };
+/**
+ * A globally-unique id for a new project.
+ *
+ * This used to be a per-browser running counter — max existing key + 1 — so every
+ * user's first project was "1", their second "2", and so on. That was fine while
+ * chat lived only in this browser, but it collides the moment projects became
+ * server-backed and shareable:
+ *
+ *  - the projects table is keyed on `projectId` alone, so two different users'
+ *    "project 1" are the *same* DynamoDB partition;
+ *  - an invite carries the project id, and a guest resolves it against their own
+ *    local history first — so a numeric id resolves to the guest's *own* project
+ *    of the same number, and the invited collaborator saw their own conversation
+ *    beside the shared files instead of the owner's.
+ *
+ * A random id is unique across browsers and users, so a project is created,
+ * shared and loaded under exactly one identity everywhere. Existing numeric ids
+ * keep working — they are only ever read back, never regenerated.
+ */
+function newProjectId(): string {
+  const c = (globalThis.crypto ?? (globalThis as any).window?.crypto) as Crypto | undefined;
 
-    request.onerror = () => reject(request.error);
-  });
+  if (c?.randomUUID) {
+    return c.randomUUID();
+  }
+
+  // Engines without randomUUID: a timestamp plus two random suffixes is unique
+  // enough (ms epoch × 2^64 of randomness) and never collides across browsers.
+  return `${Date.now().toString(36)}-${shortRandomSuffix()}-${shortRandomSuffix()}`;
 }
 
 export async function getUrlId(db: IDBDatabase, id: string): Promise<string> {

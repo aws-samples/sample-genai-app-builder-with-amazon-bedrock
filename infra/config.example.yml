@@ -3,3 +3,9 @@ region: "us-west-2"
 bedrockModelId: "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
 cognitoUsers:
   - "builder@amazon.com"
+# Optional: email(s) notified when the weekly container patch build fails.
+# Accepts a single address or a list.
+# alarmEmail: "oncall@example.com"
+# alarmEmail:
+#   - "oncall@example.com"
+#   - "secondary@example.com"

@@ -13,6 +13,7 @@ describe('SandboxInfrastructure (integration)', () => {
     });
 
     new SandboxInfrastructure(stack, 'Sandbox', {
+      originVerifyHeaderValue: 'test-origin-secret',
       stackPrefix: 'test',
       warmPoolSize: 2,
       image: ecs.ContainerImage.fromRegistry('node:20'),
@@ -94,6 +95,24 @@ describe('SandboxInfrastructure (integration)', () => {
     });
   });
 
+  test('the ALB accepts traffic only from CloudFront', () => {
+    // CloudFront enforces the signed URLs that authorise sandbox WebSockets, so
+    // the ALB must not be reachable around it.
+    const groups = template.findResources('AWS::EC2::SecurityGroup', {
+      Properties: { GroupName: 'test-sandbox-alb-sg' },
+    });
+    const [[albSgId, albSg]] = Object.entries(groups) as [string, any][];
+    const standalone = Object.values(template.findResources('AWS::EC2::SecurityGroupIngress'))
+      .map((rule: any) => rule.Properties)
+      .filter((rule: any) => rule.GroupId?.['Fn::GetAtt']?.[0] === albSgId);
+    const ingress = [...(albSg.Properties.SecurityGroupIngress ?? []), ...standalone];
+
+    expect(ingress).toHaveLength(1);
+    expect(ingress[0]).toMatchObject({ IpProtocol: 'tcp', FromPort: 443, ToPort: 443 });
+    expect(ingress[0].SourcePrefixListId).toBeDefined();
+    expect(ingress[0].CidrIp).toBeUndefined();
+  });
+
   test('NACL denies metadata service access', () => {
     template.hasResourceProperties('AWS::EC2::NetworkAclEntry', {
       CidrBlock: '169.254.169.254/32',
@@ -125,5 +144,121 @@ describe('SandboxInfrastructure (integration)', () => {
     // SandboxEcrRepositoryUri skipped — no ECR repo with mock image
     template.hasOutput('SandboxClusterArn', {});
     template.hasOutput('SandboxSessionsTableName', {});
+  });
+
+  describe('weekly container patching', () => {
+    test('schedules a weekly rebuild every Monday at 06:00 UTC', () => {
+      template.hasResourceProperties('AWS::Events::Rule', {
+        ScheduleExpression: 'cron(0 6 ? * MON *)',
+        State: 'ENABLED',
+      });
+    });
+
+    test('creates a CodeBuild project for the patch rebuild', () => {
+      template.hasResourceProperties('AWS::CodeBuild::Project', {
+        Name: 'test-sandbox-patch-build',
+      });
+    });
+
+    // Regression guard: the weekly patch build silently FAILED four weeks in a
+    // row in prod with no notification, leaving containers out of SLA. The
+    // failure alarm is the safety net that makes that impossible to miss.
+    test('alarms on a failed patch build', () => {
+      template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        AlarmName: 'test-sandbox-patch-build-failed',
+        Namespace: 'AWS/CodeBuild',
+        MetricName: 'FailedBuilds',
+        Threshold: 1,
+        ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      });
+    });
+  });
+});
+
+describe('SandboxInfrastructure — patch build alarm notification', () => {
+  test('wires the failure alarm to an SNS email topic when alarmEmail is set', () => {
+    const app = new cdk.App();
+    const stack = new cdk.Stack(app, 'TestStack', {
+      env: { account: '123456789012', region: 'us-west-2' },
+    });
+    new SandboxInfrastructure(stack, 'Sandbox', {
+      originVerifyHeaderValue: 'test-origin-secret',
+      stackPrefix: 'test',
+      warmPoolSize: 2,
+      image: ecs.ContainerImage.fromRegistry('node:20'),
+      alarmEmail: 'oncall@example.com',
+    });
+    const template = Template.fromStack(stack);
+
+    template.hasResourceProperties('AWS::SNS::Subscription', {
+      Protocol: 'email',
+      Endpoint: 'oncall@example.com',
+    });
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'test-sandbox-patch-build-failed',
+      AlarmActions: Match.anyValue(),
+    });
+  });
+
+  test('subscribes every address when alarmEmail is a list', () => {
+    const app = new cdk.App();
+    const stack = new cdk.Stack(app, 'TestStack', {
+      env: { account: '123456789012', region: 'us-west-2' },
+    });
+    new SandboxInfrastructure(stack, 'Sandbox', {
+      originVerifyHeaderValue: 'test-origin-secret',
+      stackPrefix: 'test',
+      warmPoolSize: 2,
+      image: ecs.ContainerImage.fromRegistry('node:20'),
+      alarmEmail: ['a@example.com', 'b@example.com', 'c@example.com'],
+    });
+    const template = Template.fromStack(stack);
+
+    // One topic, one subscription per address.
+    template.resourceCountIs('AWS::SNS::Topic', 1);
+    template.resourceCountIs('AWS::SNS::Subscription', 3);
+    for (const endpoint of ['a@example.com', 'b@example.com', 'c@example.com']) {
+      template.hasResourceProperties('AWS::SNS::Subscription', {
+        Protocol: 'email',
+        Endpoint: endpoint,
+      });
+    }
+  });
+
+  test('de-dupes repeated addresses in the alarmEmail list', () => {
+    const app = new cdk.App();
+    const stack = new cdk.Stack(app, 'TestStack', {
+      env: { account: '123456789012', region: 'us-west-2' },
+    });
+    new SandboxInfrastructure(stack, 'Sandbox', {
+      originVerifyHeaderValue: 'test-origin-secret',
+      stackPrefix: 'test',
+      warmPoolSize: 2,
+      image: ecs.ContainerImage.fromRegistry('node:20'),
+      alarmEmail: ['dup@example.com', 'dup@example.com'],
+    });
+    const template = Template.fromStack(stack);
+
+    template.resourceCountIs('AWS::SNS::Subscription', 1);
+  });
+
+  test('omits the SNS topic when no alarmEmail is provided', () => {
+    const app = new cdk.App();
+    const stack = new cdk.Stack(app, 'TestStack', {
+      env: { account: '123456789012', region: 'us-west-2' },
+    });
+    new SandboxInfrastructure(stack, 'Sandbox', {
+      originVerifyHeaderValue: 'test-origin-secret',
+      stackPrefix: 'test',
+      warmPoolSize: 2,
+      image: ecs.ContainerImage.fromRegistry('node:20'),
+    });
+    const template = Template.fromStack(stack);
+
+    template.resourceCountIs('AWS::SNS::Topic', 0);
+    // Alarm still exists — it just has no action wired.
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'test-sandbox-patch-build-failed',
+    });
   });
 });

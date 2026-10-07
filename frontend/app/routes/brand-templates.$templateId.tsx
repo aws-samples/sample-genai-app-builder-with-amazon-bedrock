@@ -72,14 +72,14 @@ function DesignTemplateDetail() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-bolt-elements-background-depth-1">
+    <div className="flex min-h-screen flex-col bg-vibe-elements-background-depth-1">
       <GlobalHeader />
       <main className="flex-1 pt-16">
         <div className="mx-auto flex w-full max-w-5xl flex-col gap-8 px-6 py-10">
           <nav className="flex items-center justify-between gap-2 text-sm">
             <Link
               to="/brand-templates"
-              className="inline-flex items-center gap-1.5 text-bolt-elements-textSecondary transition-colors hover:text-bolt-elements-textPrimary"
+              className="inline-flex items-center gap-1.5 text-vibe-elements-textSecondary transition-colors hover:text-vibe-elements-textPrimary"
             >
               <div className="i-ph:arrow-left text-sm" />
               Back to skills
@@ -89,7 +89,7 @@ function DesignTemplateDetail() {
                 <button
                   type="button"
                   onClick={download}
-                  className="rounded-md bg-bolt-elements-button-secondary-background px-3 py-1.5 text-xs font-medium text-bolt-elements-button-secondary-text transition-colors hover:bg-bolt-elements-button-secondary-backgroundHover"
+                  className="rounded-md bg-vibe-elements-button-secondary-background px-3 py-1.5 text-xs font-medium text-vibe-elements-button-secondary-text transition-colors hover:bg-vibe-elements-button-secondary-backgroundHover"
                 >
                   Download JSON
                 </button>
@@ -105,7 +105,7 @@ function DesignTemplateDetail() {
           </nav>
 
           {loading ? (
-            <p className="text-sm text-bolt-elements-textSecondary">Loading…</p>
+            <p className="text-sm text-vibe-elements-textSecondary">Loading…</p>
           ) : error ? (
             <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-400">
               {error}
@@ -133,16 +133,16 @@ function DesignTemplateDetail() {
                   }}
                 />
               ) : (
-                <div className="flex flex-col gap-3 rounded-lg border border-bolt-elements-borderColor bg-bolt-elements-background-depth-2 p-4 text-sm">
-                  <div className="font-medium text-bolt-elements-textPrimary">
+                <div className="flex flex-col gap-3 rounded-lg border border-vibe-elements-borderColor bg-vibe-elements-background-depth-2 p-4 text-sm">
+                  <div className="font-medium text-vibe-elements-textPrimary">
                     Extraction in progress
                   </div>
-                  <div className="text-bolt-elements-textSecondary">
+                  <div className="text-vibe-elements-textSecondary">
                     This template is still being processed. Refresh in a minute.
                   </div>
                   <Link
                     to="/brand-templates"
-                    className="self-start rounded-md bg-bolt-elements-button-secondary-background px-3 py-1.5 text-xs text-bolt-elements-button-secondary-text hover:bg-bolt-elements-button-secondary-backgroundHover"
+                    className="self-start rounded-md bg-vibe-elements-button-secondary-background px-3 py-1.5 text-xs text-vibe-elements-button-secondary-text hover:bg-vibe-elements-button-secondary-backgroundHover"
                   >
                     Back to templates
                   </Link>
@@ -158,7 +158,7 @@ function DesignTemplateDetail() {
               <div className="flex flex-col gap-4">
                 <div className="flex flex-col gap-3 rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm">
                   <div className="font-medium text-red-400">Extraction failed</div>
-                  <div className="text-bolt-elements-textSecondary">
+                  <div className="text-vibe-elements-textSecondary">
                     {skill.error?.message ??
                       'Something went wrong while extracting this template.'}
                   </div>
@@ -166,24 +166,24 @@ function DesignTemplateDetail() {
                     <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 rounded border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs">
                       {skill.error?.code && (
                         <>
-                          <dt className="text-bolt-elements-textTertiary">Code</dt>
-                          <dd className="font-mono text-bolt-elements-textPrimary">
+                          <dt className="text-vibe-elements-textTertiary">Code</dt>
+                          <dd className="font-mono text-vibe-elements-textPrimary">
                             {skill.error.code}
                           </dd>
                         </>
                       )}
                       {skill.error?.detail && (
                         <>
-                          <dt className="text-bolt-elements-textTertiary">Detail</dt>
-                          <dd className="font-mono text-bolt-elements-textPrimary">
+                          <dt className="text-vibe-elements-textTertiary">Detail</dt>
+                          <dd className="font-mono text-vibe-elements-textPrimary">
                             {skill.error.detail}
                           </dd>
                         </>
                       )}
                       {skill.error?.requestId && (
                         <>
-                          <dt className="text-bolt-elements-textTertiary">Request ID</dt>
-                          <dd className="flex items-center gap-2 font-mono text-bolt-elements-textPrimary">
+                          <dt className="text-vibe-elements-textTertiary">Request ID</dt>
+                          <dd className="flex items-center gap-2 font-mono text-vibe-elements-textPrimary">
                             <span className="select-all break-all">
                               {skill.error.requestId}
                             </span>
@@ -192,7 +192,7 @@ function DesignTemplateDetail() {
                               onClick={() =>
                                 navigator.clipboard?.writeText(skill.error!.requestId!)
                               }
-                              className="rounded border border-red-500/30 px-1.5 py-0.5 text-[10px] text-bolt-elements-textSecondary hover:bg-red-500/10"
+                              className="rounded border border-red-500/30 px-1.5 py-0.5 text-[10px] text-vibe-elements-textSecondary hover:bg-red-500/10"
                               title="Copy request ID"
                             >
                               copy
@@ -206,13 +206,13 @@ function DesignTemplateDetail() {
                 <div className="flex flex-wrap items-center gap-2">
                   <Link
                     to="/brand-templates"
-                    className="rounded-md bg-bolt-elements-button-secondary-background px-3 py-1.5 text-xs text-bolt-elements-button-secondary-text hover:bg-bolt-elements-button-secondary-backgroundHover"
+                    className="rounded-md bg-vibe-elements-button-secondary-background px-3 py-1.5 text-xs text-vibe-elements-button-secondary-text hover:bg-vibe-elements-button-secondary-backgroundHover"
                   >
                     Back to templates
                   </Link>
                   <Link
                     to="/brand-templates?new=1"
-                    className="rounded-md bg-bolt-elements-button-primary-background px-3 py-1.5 text-xs text-bolt-elements-button-primary-text hover:bg-bolt-elements-button-primary-backgroundHover"
+                    className="rounded-md bg-vibe-elements-button-primary-background px-3 py-1.5 text-xs text-vibe-elements-button-primary-text hover:bg-vibe-elements-button-primary-backgroundHover"
                   >
                     Try again
                   </Link>
@@ -229,10 +229,10 @@ function DesignTemplateDetail() {
               // status === 'ready' — all tokens present, safe to render details.
               <div className="flex flex-col gap-8">
                 <header className="flex flex-col gap-2">
-                  <h1 className="text-2xl font-semibold text-bolt-elements-textPrimary">
+                  <h1 className="text-2xl font-semibold text-vibe-elements-textPrimary">
                     {skill.name}
                   </h1>
-                  <p className="text-sm text-bolt-elements-textSecondary">
+                  <p className="text-sm text-vibe-elements-textSecondary">
                     {skill.styleDescriptor.label} ·{' '}
                     {skill.styleDescriptor.adjectives.join(' · ')}
                   </p>

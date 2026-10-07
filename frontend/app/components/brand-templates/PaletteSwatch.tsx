@@ -27,7 +27,7 @@ export function PaletteSwatch({ colors, size = 'sm', className }: PaletteSwatchP
     return (
       <div
         className={classNames(
-          'w-full rounded-md border border-bolt-elements-borderColor bg-bolt-elements-background-depth-3',
+          'w-full rounded-md border border-vibe-elements-borderColor bg-vibe-elements-background-depth-3',
           heightClass,
           className,
         )}
@@ -38,7 +38,7 @@ export function PaletteSwatch({ colors, size = 'sm', className }: PaletteSwatchP
   return (
     <div
       className={classNames(
-        'flex w-full overflow-hidden rounded-md border border-bolt-elements-borderColor',
+        'flex w-full overflow-hidden rounded-md border border-vibe-elements-borderColor',
         heightClass,
         className,
       )}

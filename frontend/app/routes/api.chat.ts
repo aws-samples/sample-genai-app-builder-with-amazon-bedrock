@@ -1,6 +1,7 @@
 import { type ActionFunctionArgs } from '@remix-run/node';
 import { streamText, type Messages } from '~/lib/.server/llm/stream-text';
 import { emitMetric } from '~/lib/.server/analytics';
+import { withKeepAlive } from '~/lib/.server/llm/stream-keepalive';
 
 // Token estimator: ~4 chars per token for text; an inlined image contributes
 // ~1500 tokens to Claude vision regardless of payload size. Reference images
@@ -103,7 +104,12 @@ export async function action({ request }: ActionFunctionArgs) {
       },
     });
 
-    return new Response(result.toAIStream().pipeThrough(transformStream), {
+    // Wrapped so bytes are always in flight: CloudFront's OriginReadTimeout on
+    // the API Gateway origin is 30s, and a model that thinks before its first
+    // text token sends nothing in that window — which is how Sonnet 5 produced a
+    // 504 in prod while Sonnet 4.6, whose first token lands sooner, streamed for
+    // 64 seconds without complaint.
+    return new Response(withKeepAlive(result.toAIStream().pipeThrough(transformStream)), {
       status: 200,
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',

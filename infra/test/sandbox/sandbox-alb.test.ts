@@ -16,6 +16,7 @@ describe('SandboxAlb', () => {
     const albSg = new ec2.SecurityGroup(stack, 'TestAlbSg', { vpc });
 
     new SandboxAlb(stack, 'TestAlb', {
+      originVerifyHeaderValue: 'test-origin-secret',
       stackPrefix: 'test',
       vpc,
       albSg,
@@ -82,13 +83,24 @@ describe('SandboxAlb', () => {
     });
   });
 
-  test('creates WebSocket listener rule at priority 10', () => {
+  /**
+   * The WebSocket path rule must sit at a HIGH priority number. ALB evaluates
+   * rules in ascending priority and stops at the first match, and the session
+   * manager adds a per-session rule (from priority 100) for each claimed sandbox
+   * so all of a session's collaborators reach one container. A low number here
+   * would shadow those rules and send collaborators back to the shared pool.
+   */
+  test('creates the WebSocket fallback rule above the per-session band', () => {
     template.hasResourceProperties('AWS::ElasticLoadBalancingV2::ListenerRule', {
-      Priority: 10,
+      Priority: 900,
       Conditions: [
         {
           Field: 'path-pattern',
-          PathPatternConfig: { Values: ['/ws', '/ws/*'] },
+          PathPatternConfig: { Values: ['/ws/*'] },
+        },
+        {
+          Field: 'http-header',
+          HttpHeaderConfig: { HttpHeaderName: 'X-Origin-Verify', Values: ['test-origin-secret'] },
         },
       ],
     });
@@ -102,8 +114,25 @@ describe('SandboxAlb', () => {
           Field: 'path-pattern',
           PathPatternConfig: { Values: ['/sandbox-preview', '/sandbox-preview/*'] },
         },
+        {
+          Field: 'http-header',
+          HttpHeaderConfig: { HttpHeaderName: 'X-Origin-Verify', Values: ['test-origin-secret'] },
+        },
       ],
     });
+  });
+
+  test('forwards nothing that lacks the CloudFront origin-verify header', () => {
+    // Every forwarding rule must require it: a rule without it would let a
+    // caller reach the containers without passing CloudFront's signed-URL check.
+    const rules = template.findResources('AWS::ElasticLoadBalancingV2::ListenerRule');
+
+    for (const rule of Object.values(rules)) {
+      expect((rule as any).Properties.Conditions).toContainEqual({
+        Field: 'http-header',
+        HttpHeaderConfig: { HttpHeaderName: 'X-Origin-Verify', Values: ['test-origin-secret'] },
+      });
+    }
   });
 
   test('creates exactly 2 listener rules (WS + preview)', () => {

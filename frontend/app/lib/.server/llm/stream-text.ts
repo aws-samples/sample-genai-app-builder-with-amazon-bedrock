@@ -25,6 +25,27 @@ export type Messages = Message[];
 
 export type StreamingOptions = Omit<Parameters<typeof _streamText>[0], 'model'>;
 
+// Newer Bedrock Claude models (Claude 5 Sonnet, Claude 4.8 Opus, and later)
+// have DEPRECATED the `temperature` parameter — including it makes Bedrock
+// reject the request with a ValidationException ("temperature is deprecated
+// for this model"). Older families (Sonnet 4.x, 3.x, Haiku 4.5) still accept
+// it. We only send `temperature: 0` for models known to accept it, so the
+// generator keeps deterministic output there while new models run at their
+// fixed setting. An unknown/future model id omits temperature — the safe,
+// non-throwing default.
+export const TEMPERATURE_CAPABLE_MODEL_IDS = [
+  'claude-sonnet-4-6',
+  'claude-sonnet-4-5',
+  'claude-sonnet-4-20',
+  'claude-3-5-sonnet',
+  'claude-3-7-sonnet',
+  'claude-haiku-4-5',
+];
+
+export function modelSupportsTemperature(modelId: string): boolean {
+  return TEMPERATURE_CAPABLE_MODEL_IDS.some((id) => modelId.includes(id));
+}
+
 // Data leakage protection: Input sanitization
 function sanitizeInput(content: string): string {
   return content
@@ -61,8 +82,9 @@ export async function streamText(messages: Messages, options?: StreamingOptions 
     console.log(`📎 Attached brand template block: ${options.brandTemplateBlock.length} chars`);
   }
 
-  // Use provided modelId or fall back to default
-  const modelId = options?.modelId || "us.anthropic.claude-3-5-sonnet-20241022-v2:0";
+  // Use provided modelId or fall back to the default starter model
+  // (kept in sync with AVAILABLE_MODELS[0] in app/lib/stores/model.ts).
+  const modelId = options?.modelId || "global.anthropic.claude-sonnet-4-6";
   console.log(`Using model: ${modelId}`);
 
   // Data leakage protection: Sanitize all user inputs
@@ -113,7 +135,8 @@ export async function streamText(messages: Messages, options?: StreamingOptions 
       max_tokens: MAX_TOKENS,
       messages: bedrockMessages,
       system: systemPrompt,
-      temperature: 0.0
+      // Only sent for models that still accept it — newer models reject it.
+      ...(modelSupportsTemperature(modelId) ? { temperature: 0.0 } : {}),
     }),
     // Bedrock Guardrail configuration
     guardrailIdentifier: process.env.BEDROCK_GUARDRAIL_ID,

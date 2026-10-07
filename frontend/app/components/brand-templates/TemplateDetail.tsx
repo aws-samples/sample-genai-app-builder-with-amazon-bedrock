@@ -77,9 +77,9 @@ export function TemplateDetail({ skill }: TemplateDetailProps) {
               ['Hierarchy', skill.typography.principles.hierarchyStrategy],
             ]}
           />
-          <div className="overflow-hidden rounded-md border border-bolt-elements-borderColor">
+          <div className="overflow-hidden rounded-md border border-vibe-elements-borderColor">
             <table className="w-full text-xs">
-              <thead className="bg-bolt-elements-background-depth-2 text-bolt-elements-textSecondary">
+              <thead className="bg-vibe-elements-background-depth-2 text-vibe-elements-textSecondary">
                 <tr>
                   <th className="px-3 py-2 text-left font-medium">Name</th>
                   <th className="px-3 py-2 text-left font-medium">Family</th>
@@ -92,21 +92,21 @@ export function TemplateDetail({ skill }: TemplateDetailProps) {
                 {skill.typography.scale.map((entry) => (
                   <tr
                     key={entry.name}
-                    className="border-t border-bolt-elements-borderColor"
+                    className="border-t border-vibe-elements-borderColor"
                   >
-                    <td className="px-3 py-2 font-medium text-bolt-elements-textPrimary">
+                    <td className="px-3 py-2 font-medium text-vibe-elements-textPrimary">
                       {entry.name}
                     </td>
-                    <td className="px-3 py-2 text-bolt-elements-textSecondary">
+                    <td className="px-3 py-2 text-vibe-elements-textSecondary">
                       {entry.fontFamily}
                     </td>
-                    <td className="px-3 py-2 text-bolt-elements-textSecondary">
+                    <td className="px-3 py-2 text-vibe-elements-textSecondary">
                       {entry.fontSize}
                     </td>
-                    <td className="px-3 py-2 text-bolt-elements-textSecondary">
+                    <td className="px-3 py-2 text-vibe-elements-textSecondary">
                       {entry.fontWeight}
                     </td>
-                    <td className="px-3 py-2 text-bolt-elements-textSecondary">
+                    <td className="px-3 py-2 text-vibe-elements-textSecondary">
                       {entry.lineHeight}
                     </td>
                   </tr>
@@ -121,14 +121,14 @@ export function TemplateDetail({ skill }: TemplateDetailProps) {
         <ol className="flex flex-col gap-2">
           {skill.informationHierarchy.focalOrder.map((f) => (
             <li key={f.rank} className="flex items-start gap-3 text-sm">
-              <span className="inline-flex h-6 w-6 flex-none items-center justify-center rounded-full bg-bolt-elements-background-depth-3 text-xs font-medium text-bolt-elements-textPrimary">
+              <span className="inline-flex h-6 w-6 flex-none items-center justify-center rounded-full bg-vibe-elements-background-depth-3 text-xs font-medium text-vibe-elements-textPrimary">
                 {f.rank}
               </span>
               <span>
-                <span className="font-medium text-bolt-elements-textPrimary">
+                <span className="font-medium text-vibe-elements-textPrimary">
                   {f.element}
                 </span>
-                <span className="ml-2 text-bolt-elements-textSecondary">
+                <span className="ml-2 text-vibe-elements-textSecondary">
                   {f.role}
                 </span>
               </span>
@@ -140,7 +140,7 @@ export function TemplateDetail({ skill }: TemplateDetailProps) {
             {skill.informationHierarchy.principles.map((p) => (
               <li
                 key={p}
-                className="rounded bg-bolt-elements-background-depth-3 px-2 py-0.5 text-xs text-bolt-elements-textSecondary"
+                className="rounded bg-vibe-elements-background-depth-3 px-2 py-0.5 text-xs text-vibe-elements-textSecondary"
               >
                 {p}
               </li>
@@ -184,12 +184,12 @@ export function TemplateDetail({ skill }: TemplateDetailProps) {
             {skill.copyVoice.examples.map((ex, idx) => (
               <li
                 key={idx}
-                className="flex items-baseline gap-3 rounded border border-bolt-elements-borderColor bg-bolt-elements-background-depth-2 px-3 py-2 text-sm"
+                className="flex items-baseline gap-3 rounded border border-vibe-elements-borderColor bg-vibe-elements-background-depth-2 px-3 py-2 text-sm"
               >
-                <span className="shrink-0 text-[10px] uppercase tracking-wide text-bolt-elements-textTertiary">
+                <span className="shrink-0 text-[10px] uppercase tracking-wide text-vibe-elements-textTertiary">
                   {ex.kind}
                 </span>
-                <span className="text-bolt-elements-textPrimary">{ex.text}</span>
+                <span className="text-vibe-elements-textPrimary">{ex.text}</span>
               </li>
             ))}
           </ul>
@@ -213,10 +213,10 @@ export function TemplateDetail({ skill }: TemplateDetailProps) {
           <ul className="mt-3 flex flex-col gap-1 text-xs">
             {skill.shadows.elevation.map((s) => (
               <li key={s.name} className="flex items-center gap-3">
-                <span className="w-12 font-medium text-bolt-elements-textPrimary">
+                <span className="w-12 font-medium text-vibe-elements-textPrimary">
                   {s.name}
                 </span>
-                <code className="text-bolt-elements-textSecondary">{s.value}</code>
+                <code className="text-vibe-elements-textSecondary">{s.value}</code>
               </li>
             ))}
           </ul>
@@ -230,7 +230,7 @@ export function TemplateDetail({ skill }: TemplateDetailProps) {
             ]}
           />
           {skill.spacing.rhythmRules.length > 0 && (
-            <ul className="mt-2 flex flex-col gap-1 text-xs text-bolt-elements-textSecondary">
+            <ul className="mt-2 flex flex-col gap-1 text-xs text-vibe-elements-textSecondary">
               {skill.spacing.rhythmRules.map((rule) => (
                 <li key={rule}>• {rule}</li>
               ))}
@@ -239,17 +239,17 @@ export function TemplateDetail({ skill }: TemplateDetailProps) {
           <ul className="mt-3 flex flex-col gap-1 text-xs">
             {skill.motion.tokens.map((t) => (
               <li key={t.name} className="flex items-center gap-3">
-                <span className="w-16 font-medium text-bolt-elements-textPrimary">
+                <span className="w-16 font-medium text-vibe-elements-textPrimary">
                   {t.name}
                 </span>
-                <code className="text-bolt-elements-textSecondary">
+                <code className="text-vibe-elements-textSecondary">
                   {t.duration} · {t.easing}
                 </code>
               </li>
             ))}
           </ul>
           {skill.motion.disallowedPatterns.length > 0 && (
-            <p className="mt-2 text-xs text-bolt-elements-textTertiary">
+            <p className="mt-2 text-xs text-vibe-elements-textTertiary">
               Disallowed: {skill.motion.disallowedPatterns.join(', ')}
             </p>
           )}
@@ -267,8 +267,8 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="flex flex-col gap-3 border-t border-bolt-elements-borderColor pt-6 first:border-t-0 first:pt-0">
-      <h2 className="text-xs font-semibold uppercase tracking-wider text-bolt-elements-textTertiary">
+    <section className="flex flex-col gap-3 border-t border-vibe-elements-borderColor pt-6 first:border-t-0 first:pt-0">
+      <h2 className="text-xs font-semibold uppercase tracking-wider text-vibe-elements-textTertiary">
         {title}
       </h2>
       {children}
@@ -281,8 +281,8 @@ function KVList({ items }: { items: Array<[string, string]> }) {
     <dl className="grid grid-cols-[minmax(120px,max-content)_1fr] gap-x-4 gap-y-1.5 text-sm">
       {items.map(([k, v]) => (
         <div key={k} className="contents">
-          <dt className="text-bolt-elements-textSecondary">{k}</dt>
-          <dd className="text-bolt-elements-textPrimary">{v}</dd>
+          <dt className="text-vibe-elements-textSecondary">{k}</dt>
+          <dd className="text-vibe-elements-textPrimary">{v}</dd>
         </div>
       ))}
     </dl>
@@ -298,18 +298,18 @@ function PaletteBucket({
 }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="text-xs uppercase tracking-wide text-bolt-elements-textTertiary">
+      <span className="text-xs uppercase tracking-wide text-vibe-elements-textTertiary">
         {label}
       </span>
       <ul className="flex flex-col gap-1">
         {tokens.map((t, idx) => (
           <li key={`${t.hex}-${idx}`} className="flex items-center gap-2 text-xs">
             <span
-              className="h-5 w-5 flex-none rounded border border-bolt-elements-borderColor"
+              className="h-5 w-5 flex-none rounded border border-vibe-elements-borderColor"
               style={{ backgroundColor: t.hex }}
             />
-            <code className="text-bolt-elements-textPrimary">{t.hex}</code>
-            <span className="truncate text-bolt-elements-textSecondary">
+            <code className="text-vibe-elements-textPrimary">{t.hex}</code>
+            <span className="truncate text-vibe-elements-textSecondary">
               {t.role}
             </span>
           </li>

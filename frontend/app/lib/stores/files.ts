@@ -4,6 +4,8 @@ import { computeFileModifications } from '~/utils/diff';
 import { createScopedLogger } from '~/utils/logger';
 import { unreachable } from '~/utils/unreachable';
 import type { RuntimeConnection, FileChangeEvent } from '~/lib/runtime/types';
+import { setSessionStatus } from '~/lib/runtime/session-status';
+import { WORK_DIR } from '~/utils/constants';
 
 const logger = createScopedLogger('FilesStore');
 
@@ -22,7 +24,8 @@ type Dirent = File | Folder;
 export type FileMap = Record<string, Dirent | undefined>;
 
 export class FilesStore {
-  #connection: Promise<RuntimeConnection>;
+  /** Resolve a healthy connection on demand; see {@link getConnection}. */
+  #connect: () => Promise<RuntimeConnection>;
 
   /**
    * Tracks the number of files without folders.
@@ -45,8 +48,8 @@ export class FilesStore {
     return this.#size;
   }
 
-  constructor(connectionPromise: Promise<RuntimeConnection>) {
-    this.#connection = connectionPromise;
+  constructor(connect: () => Promise<RuntimeConnection>) {
+    this.#connect = connect;
 
     if (import.meta.hot) {
       import.meta.hot.data.files = this.files;
@@ -75,7 +78,7 @@ export class FilesStore {
   }
 
   async saveFile(filePath: string, content: string) {
-    const conn = await this.#connection;
+    const conn = await this.#connect();
 
     try {
       const relativePath = filePath.replace(/^\/home\/sandbox\/project\/?/, '');
@@ -86,7 +89,10 @@ export class FilesStore {
 
       const oldContent = this.getFile(filePath)?.content;
 
-      if (!oldContent) {
+      // Empty is a legitimate content, not a missing file. Guarding on falsiness
+      // refused to write any file that happened to be empty — routine once
+      // collaborative edits are auto-saved, since a newly created file starts empty.
+      if (oldContent === undefined) {
         unreachable('Expected content to be defined');
       }
 
@@ -109,16 +115,57 @@ export class FilesStore {
     }
   }
 
+  /**
+   * Absolute store path for a path reported by the sidecar.
+   *
+   * The agent speaks in paths relative to the container's workspace
+   * (`package.json`, `src/App.jsx`), while this store — and the file tree, which
+   * filters on `WORK_DIR` — key off absolute ones. Prefixing with only `/` left
+   * every entry outside the tree's root, so a fully populated project rendered as
+   * an empty Files panel.
+   */
+  #toStorePath(reportedPath: string): string {
+    if (reportedPath.startsWith(WORK_DIR)) {
+      return reportedPath;
+    }
+
+    return `${WORK_DIR}/${reportedPath.replace(/^\/+/, '')}`;
+  }
+
   async #init() {
-    const conn = await this.#connection;
+    // Resolving the connection can fail if the sandbox boot lost the page-load
+    // race (auth not hydrated yet). Retry rather than give up: a one-shot await
+    // here is exactly what used to leave a reopened project with a permanently
+    // empty file tree — nothing else re-syncs it. #connect() re-boots on each
+    // call, so successive attempts get progressively warmer state.
+    let conn: RuntimeConnection | undefined;
+
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      try {
+        conn = await this.#connect();
+        break;
+      } catch (err) {
+        logger.warn(`File store connect attempt ${attempt}/5 failed:`, err);
+
+        if (attempt === 5) {
+          logger.error('File store could not connect; the file tree will stay empty until retry.');
+          return;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, Math.min(400 * 2 ** (attempt - 1), 3000)));
+      }
+    }
+
+    if (!conn) {
+      return;
+    }
 
     // Subscribe to file change events from the sidecar's chokidar watcher
     conn.on('fs:change:event', (msg) => {
       const event = msg as unknown as FileChangeEvent;
       const { eventType, path, content, isBinary } = event.payload;
 
-      // Prefix path to match store convention
-      const fullPath = path.startsWith('/') ? path : `/${path}`;
+      const fullPath = this.#toStorePath(path);
 
       switch (eventType) {
         case 'add_dir':
@@ -166,8 +213,12 @@ export class FilesStore {
       });
       const files = (syncRes.payload as any)?.files || [];
       for (const file of files) {
-        const fullPath = file.path.startsWith('/') ? file.path : `/${file.path}`;
-        if (file.type === 'folder') {
+        const fullPath = this.#toStorePath(file.path);
+        // The sidecar reports directories as 'directory' (see FsSyncFile in the
+        // agent protocol); this store models them as 'folder'. Accept both so a
+        // directory is never mistaken for an empty file — which used to leave a
+        // freshly-hydrated tree full of bogus zero-byte entries.
+        if (file.type === 'folder' || file.type === 'directory') {
           this.files.setKey(fullPath, { type: 'folder' });
         } else {
           this.#size++;
@@ -184,6 +235,11 @@ export class FilesStore {
       }
     } catch (err) {
       logger.debug('Initial file sync skipped:', err);
+    } finally {
+      // The workbench is now populated (or the owner's container is genuinely
+      // empty). Either way the "connecting to shared session" state is done —
+      // clear it so the file tree and editor show instead of a spinner.
+      setSessionStatus('ready');
     }
   }
 }
