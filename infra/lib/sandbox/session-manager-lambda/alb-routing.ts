@@ -8,7 +8,10 @@ import {
   DescribeRulesCommand,
   DescribeTargetGroupsCommand,
   DescribeTargetHealthCommand,
+  DescribeTagsCommand,
   RegisterTargetsCommand,
+  type Rule,
+  type TargetGroup,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { createHash } from 'node:crypto';
 
@@ -55,20 +58,32 @@ async function getOriginVerifyValue(): Promise<string> {
 }
 
 /**
- * Per-session rules must be evaluated BEFORE the static `/ws/*` fallback.
+ * Per-session rules live in this band, below the static fail-closed `/ws/*` and
+ * `/sandbox-preview/*` rules at 900+ (see sandbox-alb.ts).
  *
  * ALB walks rules in ascending priority and stops at the first match, so a lower
- * number wins. The `/ws/*` path rule matches every WebSocket request, so it sits
- * at priority 900 (see sandbox-alb.ts) and this band sits below it.
+ * number wins.
  */
 const PRIORITY_BASE = 100;
 /**
- * Bounded below the `/ws/*` fallback at 900, and well inside the default limit of
- * 100 rules per listener. Exhaustion is not fatal: a session with no rule of its
- * own falls through to the fallback and behaves exactly as it did before (solo
- * editing works, but a second browser may not reach the same container).
+ * Upper bound of the per-session band. The real ceiling is the listener's rule
+ * quota (100 by default), which is why leaked rules are reconciled away and
+ * `SessionRuleCount` is alarmed on. Exhaustion is fatal for the new session — it
+ * gets no container — because the static rules return 503 rather than
+ * forwarding to an arbitrary, possibly another tenant's, container.
  */
 const PRIORITY_LIMIT = 800;
+
+/** Header CloudFront lifts out of `/ws/{id}` and `/sandbox-preview/{id}/`. */
+const SESSION_HEADER = 'x-sandbox-session';
+
+/** Prefix of every per-session target group name; see {@link sessionTargetGroupName}. */
+const SESSION_TG_PREFIX = 'sbx-s-';
+
+/** `ManagedBy` tag value on target groups this stack's session manager creates. */
+function managedByTag(): string {
+  return `${STACK_PREFIX}-session-manager`;
+}
 
 /**
  * A session's routing: the target group holding its container and the listener
@@ -90,35 +105,7 @@ export interface SessionRouting {
  */
 export function sessionTargetGroupName(sessionId: string): string {
   const digest = createHash('sha256').update(sessionId).digest('hex').slice(0, 12);
-  return `sbx-s-${digest}`;
-}
-
-/**
- * Derive a task's private IP from the hostname the sidecar reports as its
- * `containerId` (awsvpc tasks are named `ip-10-1-2-3.<region>.compute.internal`).
- *
- * The container is the authority on which box it is. Claiming a task only writes
- * a DynamoDB record — nothing tells that container it now owns a session — so a
- * claim can point at a different box than the one that actually answers. Reading
- * the identity back out of the connection avoids trusting the claim.
- *
- * Returns null for any hostname that is not in that form, so a caller falls back
- * to the claimed address rather than pinning a guess.
- */
-export function taskIpFromContainerId(containerId: string | undefined): string | null {
-  const match = /^ip-(\d{1,3})-(\d{1,3})-(\d{1,3})-(\d{1,3})\./.exec(containerId ?? '');
-
-  if (!match) {
-    return null;
-  }
-
-  const octets = match.slice(1, 5).map(Number);
-
-  if (octets.some((octet) => octet > 255)) {
-    return null;
-  }
-
-  return octets.join('.');
+  return `${SESSION_TG_PREFIX}${digest}`;
 }
 
 /**
@@ -135,7 +122,10 @@ export function taskIpFromContainerId(containerId: string | undefined): string |
  * converges rather than accumulating targets.
  *
  * Returns null when routing could not be provisioned. Callers must treat that as
- * non-fatal: the static catch-all rule still serves the session.
+ * fatal for the session: there is no shared fallback route any more, so a
+ * session without its own rule cannot reach a container (by design — the
+ * fallback used to land it on an arbitrary one). Any target group created here
+ * is deleted again on failure so it does not leak.
  */
 export async function provisionSessionRouting(
   sessionId: string,
@@ -147,8 +137,10 @@ export async function provisionSessionRouting(
     return null;
   }
 
+  let targetGroupArn: string | null = null;
+
   try {
-    const targetGroupArn = await ensureTargetGroup(sessionId);
+    targetGroupArn = await ensureTargetGroup(sessionId);
 
     await client.send(
       new RegisterTargetsCommand({
@@ -166,6 +158,7 @@ export async function provisionSessionRouting(
     const ruleArn = await ensureSessionRule(sessionId, targetGroupArn);
 
     if (!ruleArn) {
+      await deleteTargetGroupQuietly(targetGroupArn);
       return null;
     }
 
@@ -174,8 +167,39 @@ export async function provisionSessionRouting(
     return { targetGroupArn, ruleArn };
   } catch (err) {
     console.error(`[alb-routing] Failed to provision routing for ${sessionId}:`, err);
+
+    // No rule forwards to the group if we got here without one, so it is safe to
+    // drop; leaving it would leak a target group per failed claim.
+    if (targetGroupArn) {
+      await deleteTargetGroupQuietly(targetGroupArn);
+    }
+
     return null;
   }
+}
+
+async function deleteTargetGroupQuietly(targetGroupArn: string): Promise<void> {
+  try {
+    await client.send(new DeleteTargetGroupCommand({ TargetGroupArn: targetGroupArn }));
+  } catch (err) {
+    console.warn(`[alb-routing] Could not delete target group ${targetGroupArn}:`, err);
+  }
+}
+
+/** Every rule on the listener, following pagination. */
+async function listAllRules(): Promise<Rule[]> {
+  const rules: Rule[] = [];
+  let marker: string | undefined;
+
+  do {
+    const page = await client.send(
+      new DescribeRulesCommand({ ListenerArn: LISTENER_ARN, Marker: marker }),
+    );
+    rules.push(...(page.Rules ?? []));
+    marker = page.NextMarker;
+  } while (marker);
+
+  return rules;
 }
 
 /** Remove every target except the one this session is now pinned to. */
@@ -232,7 +256,7 @@ async function ensureTargetGroup(sessionId: string): Promise<string> {
       HealthyThresholdCount: 2,
       UnhealthyThresholdCount: 3,
       Tags: [
-        { Key: 'ManagedBy', Value: `${STACK_PREFIX}-session-manager` },
+        { Key: 'ManagedBy', Value: managedByTag() },
         { Key: 'SessionId', Value: sessionId },
       ],
     }),
@@ -325,9 +349,7 @@ async function createSessionRule(
     const priority = await nextFreePriority();
 
     if (priority === null) {
-      console.warn(
-        `[alb-routing] No free rule priority for ${sessionId} — falling back to shared routing`,
-      );
+      console.warn(`[alb-routing] No free rule priority for ${sessionId} — session cannot be routed`);
       return null;
     }
 
@@ -340,7 +362,7 @@ async function createSessionRule(
             {
               Field: 'http-header',
               HttpHeaderConfig: {
-                HttpHeaderName: 'x-sandbox-session',
+                HttpHeaderName: SESSION_HEADER,
                 Values: [sessionId],
               },
             },
@@ -420,9 +442,11 @@ export async function teardownSessionRouting(sessionId: string): Promise<void> {
   }
 
   try {
-    const rules = await client.send(new DescribeRulesCommand({ ListenerArn: LISTENER_ARN }));
+    // Paginated: an unpaginated read missed rules past the first page, which is
+    // one way rules leaked until the listener hit its quota.
+    const rules = await listAllRules();
 
-    for (const rule of rules.Rules ?? []) {
+    for (const rule of rules) {
       const matchesSession = rule.Conditions?.some((condition) =>
         condition.HttpHeaderConfig?.Values?.includes(sessionId),
       );
@@ -445,4 +469,170 @@ export async function teardownSessionRouting(sessionId: string): Promise<void> {
   } catch (err) {
     console.warn(`[alb-routing] Failed to tear down routing for ${sessionId}:`, err);
   }
+}
+
+export interface ReconcileResult {
+  /** Per-session rules on the listener at the start of the run. */
+  sessionRuleCount: number;
+  deletedRules: number;
+  deletedTargetGroups: number;
+}
+
+export interface ReconcileOptions {
+  /** Upper bound on rules plus target groups deleted in one run. */
+  maxDeletions?: number;
+}
+
+/** Target group a rule forwards to, from either action shape ELBv2 returns. */
+function forwardTargetGroups(rule: Rule): string[] {
+  return (rule.Actions ?? []).flatMap((action) => [
+    ...(action.TargetGroupArn ? [action.TargetGroupArn] : []),
+    ...(action.ForwardConfig?.TargetGroups ?? []).flatMap((tg) => (tg.TargetGroupArn ? [tg.TargetGroupArn] : [])),
+  ]);
+}
+
+/**
+ * The session a rule was created for, or null if it is not a per-session rule.
+ *
+ * Deliberately narrow, because anything this returns non-null for may be
+ * deleted: never the default rule, never a static rule outside the per-session
+ * priority band (20, 900, ...), and only rules that match exactly one session
+ * header value and forward to a per-session target group.
+ */
+function sessionOfRule(rule: Rule): string | null {
+  if (rule.IsDefault) {
+    return null;
+  }
+
+  const priority = Number(rule.Priority);
+  if (!Number.isInteger(priority) || priority < PRIORITY_BASE || priority > PRIORITY_LIMIT) {
+    return null;
+  }
+
+  const header = rule.Conditions?.find(
+    (c) => c.HttpHeaderConfig?.HttpHeaderName?.toLowerCase() === SESSION_HEADER,
+  );
+  const values = header?.HttpHeaderConfig?.Values ?? [];
+  if (values.length !== 1) {
+    return null;
+  }
+
+  const forwardsToSessionGroup = forwardTargetGroups(rule).some((arn) =>
+    arn.includes(`:targetgroup/${SESSION_TG_PREFIX}`),
+  );
+
+  return forwardsToSessionGroup ? values[0] : null;
+}
+
+async function listSessionTargetGroups(): Promise<TargetGroup[]> {
+  const groups: TargetGroup[] = [];
+  let marker: string | undefined;
+
+  do {
+    const page = await client.send(new DescribeTargetGroupsCommand({ Marker: marker }));
+    groups.push(...(page.TargetGroups ?? []).filter((g) => g.TargetGroupName?.startsWith(SESSION_TG_PREFIX)));
+    marker = page.NextMarker;
+  } while (marker);
+
+  return groups;
+}
+
+/**
+ * Delete per-session routing whose session no longer needs it.
+ *
+ * Teardown on session end is best effort, and in the past sessions also vanished
+ * without one (TTL deletion of the record, crashes between claim and teardown),
+ * so leaked rules accumulated until the listener hit its rule quota. This sweeps
+ * them up: per-session rules first, then this stack's (`ManagedBy`-tagged)
+ * per-session target groups that no rule forwards to any more.
+ *
+ * `isOrphan` decides per session id (the caller knows the session store). Capped
+ * per run so a bad answer cannot wipe the listener in one go, and it never
+ * throws, so the cleanup cron always finishes.
+ */
+export async function reconcileOrphanRouting(
+  isOrphan: (sessionId: string) => Promise<boolean>,
+  options: ReconcileOptions = {},
+): Promise<ReconcileResult> {
+  const maxDeletions = options.maxDeletions ?? 20;
+  const result: ReconcileResult = { sessionRuleCount: 0, deletedRules: 0, deletedTargetGroups: 0 };
+
+  if (!LISTENER_ARN) {
+    return result;
+  }
+
+  const verdicts = new Map<string, boolean>();
+  const orphan = async (sessionId: string): Promise<boolean> => {
+    if (!verdicts.has(sessionId)) {
+      verdicts.set(sessionId, await isOrphan(sessionId));
+    }
+    return verdicts.get(sessionId)!;
+  };
+  const budgetLeft = () => result.deletedRules + result.deletedTargetGroups < maxDeletions;
+
+  try {
+    const sessionRules = (await listAllRules())
+      .map((rule) => ({ rule, sessionId: sessionOfRule(rule) }))
+      .filter((entry): entry is { rule: Rule; sessionId: string } => entry.sessionId !== null);
+
+    result.sessionRuleCount = sessionRules.length;
+
+    for (const { rule, sessionId } of sessionRules) {
+      if (!budgetLeft()) {
+        break;
+      }
+
+      try {
+        if (rule.RuleArn && (await orphan(sessionId))) {
+          await client.send(new DeleteRuleCommand({ RuleArn: rule.RuleArn }));
+          result.deletedRules++;
+          console.log(`[alb-routing] Reconciled orphan rule for session ${sessionId}`);
+        }
+      } catch (err) {
+        console.warn(`[alb-routing] Could not reconcile rule for session ${sessionId}:`, err);
+      }
+    }
+
+    if (!budgetLeft()) {
+      return result;
+    }
+
+    const groups = (await listSessionTargetGroups()).filter(
+      (g) => g.TargetGroupArn && (g.LoadBalancerArns ?? []).length === 0,
+    );
+
+    for (let i = 0; i < groups.length && budgetLeft(); i += 20) {
+      const batch = groups.slice(i, i + 20);
+      const tags = await client.send(
+        new DescribeTagsCommand({ ResourceArns: batch.map((g) => g.TargetGroupArn!) }),
+      );
+
+      for (const description of tags.TagDescriptions ?? []) {
+        if (!budgetLeft()) {
+          break;
+        }
+
+        const tagValue = (key: string) => description.Tags?.find((t) => t.Key === key)?.Value;
+        const sessionId = tagValue('SessionId');
+
+        if (!description.ResourceArn || tagValue('ManagedBy') !== managedByTag() || !sessionId) {
+          continue;
+        }
+
+        try {
+          if (await orphan(sessionId)) {
+            await client.send(new DeleteTargetGroupCommand({ TargetGroupArn: description.ResourceArn }));
+            result.deletedTargetGroups++;
+            console.log(`[alb-routing] Reconciled orphan target group for session ${sessionId}`);
+          }
+        } catch (err) {
+          console.warn(`[alb-routing] Could not reconcile target group for session ${sessionId}:`, err);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[alb-routing] Routing reconciliation failed:', err);
+  }
+
+  return result;
 }

@@ -76,6 +76,135 @@ export class WriteThrottledError extends Error {
   }
 }
 
+/**
+ * Partition prefix for urlId claim items. Client-supplied project ids may not
+ * start with it, so a project can never share a partition with a claim.
+ */
+export const URLID_CLAIM_PREFIX = 'URLID#';
+const URLID_CLAIM_SK = 'URLID_CLAIM';
+
+/** Thrown when the owner already has a live project using the requested urlId. */
+export class UrlIdTakenError extends Error {
+  constructor() {
+    super('urlId is already used by another of your projects');
+    this.name = 'UrlIdTakenError';
+  }
+}
+
+/**
+ * Key of the item that reserves `urlId` for one of `ownerId`'s projects.
+ *
+ * A urlId is unique per owner, not globally: resolution is scoped to the caller
+ * (see `resolveProject` in the handler), so two users may pick the same slug
+ * without either being able to reach the other's project through it.
+ */
+function urlIdClaimKey(ownerId: string, urlId: string): { projectId: string; sk: string } {
+  return { projectId: `${URLID_CLAIM_PREFIX}${ownerId}#${urlId}`, sk: URLID_CLAIM_SK };
+}
+
+/**
+ * The conditional Put that reserves a urlId. Deliberately carries neither
+ * `ownerId` nor `urlId`, so it never appears in the byOwner or byUrlId indexes.
+ */
+function urlIdClaimPut(ownerId: string, urlId: string, projectId: string) {
+  return {
+    Put: {
+      TableName: TABLE_NAME,
+      Item: marshall({ ...urlIdClaimKey(ownerId, urlId), claimedProjectId: projectId }),
+      ConditionExpression: 'attribute_not_exists(projectId)',
+    },
+  };
+}
+
+function cancellationCodes(err: unknown): string[] | null {
+  if ((err as { name?: string })?.name !== 'TransactionCanceledException') {
+    return null;
+  }
+
+  return ((err as { CancellationReasons?: { Code?: string }[] }).CancellationReasons ?? []).map(
+    (reason) => reason?.Code ?? 'None',
+  );
+}
+
+/**
+ * Drop a claim whose project no longer exists (deleted, or aged out by TTL), so
+ * the owner can reuse the slug. Returns whether a stale claim was removed.
+ */
+async function releaseStaleUrlIdClaim(ownerId: string, urlId: string): Promise<boolean> {
+  const result = await client.send(
+    new GetItemCommand({ TableName: TABLE_NAME, Key: marshall(urlIdClaimKey(ownerId, urlId)) }),
+  );
+
+  if (!result.Item) {
+    return false;
+  }
+
+  const claimedProjectId = (unmarshall(result.Item) as { claimedProjectId?: string }).claimedProjectId;
+  const claimed = claimedProjectId ? await getProjectMeta(claimedProjectId) : null;
+
+  if (claimed && claimed.ownerId === ownerId) {
+    return false;
+  }
+
+  await releaseUrlIdClaim(ownerId, urlId, claimedProjectId ?? '');
+
+  return true;
+}
+
+/**
+ * Release `ownerId`'s claim on `urlId`, but only if it is still held by
+ * `projectId` — never one that has since been re-claimed by another project.
+ */
+export async function releaseUrlIdClaim(ownerId: string, urlId: string, projectId: string): Promise<void> {
+  try {
+    await client.send(
+      new DeleteItemCommand({
+        TableName: TABLE_NAME,
+        Key: marshall(urlIdClaimKey(ownerId, urlId)),
+        ConditionExpression: 'claimedProjectId = :pid',
+        ExpressionAttributeValues: marshall({ ':pid': projectId }),
+      }),
+    );
+  } catch (err) {
+    if ((err as { name?: string })?.name !== 'ConditionalCheckFailedException') {
+      throw err;
+    }
+  }
+}
+
+/**
+ * Run a transaction whose item at `claimIndex` reserves a urlId, translating a
+ * lost claim into {@link UrlIdTakenError}. A claim held by a project that no
+ * longer exists is released and the transaction retried once.
+ */
+async function writeWithUrlIdClaim(
+  transactItems: any[],
+  claimIndex: number,
+  ownerId: string,
+  urlId: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await client.send(new TransactWriteItemsCommand({ TransactItems: transactItems }));
+      return;
+    } catch (err) {
+      const codes = cancellationCodes(err);
+      const onlyClaimFailed =
+        codes !== null &&
+        codes[claimIndex] === 'ConditionalCheckFailed' &&
+        codes.every((code, i) => i === claimIndex || code === 'None');
+
+      if (!onlyClaimFailed) {
+        throw err;
+      }
+
+      if (attempt > 0 || !(await releaseStaleUrlIdClaim(ownerId, urlId))) {
+        throw new UrlIdTakenError();
+      }
+    }
+  }
+}
+
 function isThrottle(err: unknown): boolean {
   const name = (err as { name?: string } | null)?.name ?? '';
 
@@ -201,34 +330,40 @@ export function newProjectMeta(
  * and answers 404 without it.
  */
 export async function createProject(meta: ProjectMeta): Promise<void> {
-  await client.send(
-    new TransactWriteItemsCommand({
-      TransactItems: [
-        {
-          Put: {
-            TableName: TABLE_NAME,
-            Item: marshall({ ...meta, sk: META_SK }, { removeUndefinedValues: true }),
-            ConditionExpression: 'attribute_not_exists(projectId)',
+  const transactItems: any[] = [
+    {
+      Put: {
+        TableName: TABLE_NAME,
+        Item: marshall({ ...meta, sk: META_SK }, { removeUndefinedValues: true }),
+        ConditionExpression: 'attribute_not_exists(projectId)',
+      },
+    },
+    {
+      Put: {
+        TableName: TABLE_NAME,
+        Item: marshall(
+          {
+            projectId: meta.projectId,
+            sk: `${MEMBER_SK_PREFIX}${meta.ownerId}`,
+            userId: meta.ownerId,
+            role: 'owner',
+            addedAt: meta.createdAt,
           },
-        },
-        {
-          Put: {
-            TableName: TABLE_NAME,
-            Item: marshall(
-              {
-                projectId: meta.projectId,
-                sk: `${MEMBER_SK_PREFIX}${meta.ownerId}`,
-                userId: meta.ownerId,
-                role: 'owner',
-                addedAt: meta.createdAt,
-              },
-              { removeUndefinedValues: true },
-            ),
-          },
-        },
-      ],
-    }),
-  );
+          { removeUndefinedValues: true },
+        ),
+      },
+    },
+  ];
+
+  if (!meta.urlId) {
+    await client.send(new TransactWriteItemsCommand({ TransactItems: transactItems }));
+    return;
+  }
+
+  // Reserving the slug in the same transaction means a project is never created
+  // with a urlId another of the owner's live projects already uses.
+  transactItems.push(urlIdClaimPut(meta.ownerId, meta.urlId, meta.projectId));
+  await writeWithUrlIdClaim(transactItems, transactItems.length - 1, meta.ownerId, meta.urlId);
 }
 
 export async function getProjectMeta(projectId: string): Promise<ProjectMeta | null> {
@@ -246,28 +381,44 @@ export async function getProjectMeta(projectId: string): Promise<ProjectMeta | n
   return unmarshall(result.Item) as ProjectMeta;
 }
 
+/** Upper bound on byUrlId pages read for one lookup. */
+const URLID_QUERY_MAX_PAGES = 10;
+
 /**
- * Resolve a project by the id its URL carries.
+ * Every project, across all owners, whose urlId is `urlId`.
  *
- * Chat URLs use the human-readable `urlId`, so a request path is not necessarily
- * a `projectId`; callers try the direct read first and fall back to this.
+ * A urlId is only unique per owner, so this can return several projects; which
+ * one (if any) a caller may reach is decided by the handler's `resolveProject`,
+ * never by taking the first match.
  */
-export async function getProjectMetaByUrlId(urlId: string): Promise<ProjectMeta | null> {
-  const result = await client.send(
-    new QueryCommand({
-      TableName: TABLE_NAME,
-      IndexName: 'byUrlId',
-      KeyConditionExpression: 'urlId = :urlId',
-      ExpressionAttributeValues: marshall({ ':urlId': urlId }),
-      Limit: 1,
-    }),
-  );
+export async function getProjectMetasByUrlId(urlId: string): Promise<ProjectMeta[]> {
+  const metas: ProjectMeta[] = [];
+  let exclusiveStartKey: Record<string, any> | undefined;
+  let pages = 0;
 
-  if (!result.Items || result.Items.length === 0) {
-    return null;
-  }
+  do {
+    const result = await client.send(
+      new QueryCommand({
+        TableName: TABLE_NAME,
+        IndexName: 'byUrlId',
+        KeyConditionExpression: 'urlId = :urlId',
+        ExpressionAttributeValues: marshall({ ':urlId': urlId }),
+        ExclusiveStartKey: exclusiveStartKey,
+      }),
+    );
 
-  return unmarshall(result.Items[0]) as ProjectMeta;
+    for (const item of result.Items ?? []) {
+      const record = unmarshall(item) as ProjectMeta & { sk?: string };
+      if (record.sk === undefined || record.sk === META_SK) {
+        metas.push(record);
+      }
+    }
+
+    exclusiveStartKey = result.LastEvaluatedKey;
+    pages++;
+  } while (exclusiveStartKey && pages < URLID_QUERY_MAX_PAGES);
+
+  return metas;
 }
 
 /** Projects owned by a user, most recently updated first. Metadata only. */
@@ -712,6 +863,7 @@ export async function updateProjectDescription(
 export async function updateProjectMeta(
   projectId: string,
   patch: { description?: string; urlId?: string },
+  ownerId?: string,
 ): Promise<void> {
   const now = Date.now();
   const sets = ['updatedAt = :updatedAt', 'expiresAt = :expiresAt'];
@@ -723,8 +875,34 @@ export async function updateProjectMeta(
   }
 
   if (patch.urlId !== undefined) {
+    if (!ownerId) {
+      throw new Error('updateProjectMeta: ownerId is required to set a urlId');
+    }
+
     sets.push('urlId = :urlId');
     values[':urlId'] = patch.urlId;
+
+    // The slug is written once, and reserved for this owner in the same
+    // transaction, so neither a second write nor a race can attach it to a
+    // different project of theirs.
+    await writeWithUrlIdClaim(
+      [
+        {
+          Update: {
+            TableName: TABLE_NAME,
+            Key: marshall({ projectId, sk: META_SK }),
+            UpdateExpression: `SET ${sets.join(', ')}`,
+            ConditionExpression: 'attribute_exists(projectId) AND attribute_not_exists(urlId)',
+            ExpressionAttributeValues: marshall(values),
+          },
+        },
+        urlIdClaimPut(ownerId, patch.urlId, projectId),
+      ],
+      1,
+      ownerId,
+      patch.urlId,
+    );
+    return;
   }
 
   await client.send(

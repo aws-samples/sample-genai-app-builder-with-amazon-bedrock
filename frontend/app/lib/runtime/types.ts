@@ -336,6 +336,14 @@ export interface RuntimeConfig {
    * reconnect. Returning undefined keeps the existing endpoint.
    */
   refreshEndpoint?: () => Promise<string | undefined>;
+  /**
+   * Re-signed retries allowed when the container refuses this session (close
+   * code 4003, or 4001 from older sidecars) before giving up. A container serves
+   * one session for its lifetime, so a refusal that persists will not clear.
+   */
+  maxRefusedRetries?: number;
+  /** Called once, when the container has refused this session for good. */
+  onSessionRefused?: () => void;
 }
 
 export enum RuntimeErrorCode {

@@ -46,6 +46,10 @@ RUN echo "cache-bust: ${CACHE_BUST}" && apt-get update && apt-get upgrade -y && 
     g++ \
     && rm -rf /var/lib/apt/lists/*
 
+# The npm bundled with the Node base image lags its own dependency fixes (the
+# image scan flags them), so move it to the current npm release.
+RUN npm install -g npm@latest --no-audit --no-fund && npm cache clean --force
+
 # Create sandbox user
 RUN useradd -m -s /bin/bash sandbox
 

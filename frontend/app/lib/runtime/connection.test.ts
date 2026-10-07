@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { RuntimeConnectionImpl } from './connection';
+import { RuntimeConnectionImpl, redactWsUrl } from './connection';
 import type { RuntimeConfig } from './types';
 
 // Mock WebSocket
@@ -757,6 +757,130 @@ describe('RuntimeConnectionImpl', () => {
 
       // Should not have created a new WebSocket
       expect(mockWsInstance.url).toBe(previousUrl);
+    });
+  });
+
+  /**
+   * A container serves exactly one session for its lifetime and refuses every
+   * other one with 4003 (4001 from older sidecars). That is worth a few
+   * re-signed retries (the task's assignment tag can take a moment to be
+   * readable) but never the full reconnect budget against a container that will
+   * never accept this session.
+   */
+  describe('session refused by the container', () => {
+    const SIGNED = 'wss://vibe.test/ws/sess-1?Policy=pol&Signature=SECRETSIG&Key-Pair-Id=K2';
+
+    async function refuseCurrent(code = 4003) {
+      await vi.advanceTimersByTimeAsync(10);
+      mockWsInstance.simulateClose(code, code === 4003 ? 'Not assigned' : 'Wrong container');
+    }
+
+    it('re-signs the URL and retries, then connects once the container accepts', async () => {
+      const refreshEndpoint = vi.fn().mockResolvedValue('wss://vibe.test/ws/sess-1?Policy=fresh');
+      const conn = new RuntimeConnectionImpl({
+        ...defaultConfig,
+        wsEndpoint: SIGNED,
+        reconnect: true,
+        reconnectInterval: 100,
+        refreshEndpoint,
+      });
+      const p = conn.connect();
+
+      await refuseCurrent();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(refreshEndpoint).toHaveBeenCalledTimes(1);
+      expect(mockWsInstance.url).toBe('wss://vibe.test/ws/sess-1?Policy=fresh');
+
+      sendReadyEvent();
+      await p;
+      expect(conn.isConnected()).toBe(true);
+      conn.close();
+    });
+
+    it.each([4003, 4001])('gives up after a few refusals (code %i) with a clear error, not the full reconnect budget', async (code) => {
+      const onSessionRefused = vi.fn();
+      const refreshEndpoint = vi.fn().mockResolvedValue(undefined);
+      const conn = new RuntimeConnectionImpl({
+        ...defaultConfig,
+        wsEndpoint: SIGNED,
+        reconnect: true,
+        reconnectInterval: 100,
+        maxReconnectAttempts: 10,
+        maxRefusedRetries: 2,
+        refreshEndpoint,
+        onSessionRefused,
+      });
+      const result = conn.connect().catch((e: Error) => e);
+
+      for (let i = 0; i < 3; i++) {
+        await refuseCurrent(code);
+        await vi.advanceTimersByTimeAsync(1000);
+      }
+
+      const err = await result;
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toMatch(/refused this session/i);
+      expect(onSessionRefused).toHaveBeenCalledTimes(1);
+      // Two retries after the first refusal, then stop.
+      expect(refreshEndpoint).toHaveBeenCalledTimes(2);
+
+      // Nothing keeps dialling in the background.
+      const lastSocket = mockWsInstance;
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(mockWsInstance).toBe(lastSocket);
+
+      // And callers are told why rather than left waiting.
+      await expect(conn.whenReady()).rejects.toThrow(/refused this session/i);
+    });
+
+    it('also stops a background reconnect that the container refuses', async () => {
+      const onSessionRefused = vi.fn();
+      const conn = new RuntimeConnectionImpl({
+        ...defaultConfig,
+        reconnect: true,
+        reconnectInterval: 100,
+        maxRefusedRetries: 1,
+        onSessionRefused,
+      });
+      const p = conn.connect();
+      await vi.advanceTimersByTimeAsync(10);
+      sendReadyEvent();
+      await p;
+
+      // The task retired; every reconnect is now refused.
+      mockWsInstance.simulateClose(1006, 'Connection lost');
+      await vi.advanceTimersByTimeAsync(300);
+      await refuseCurrent();
+      await vi.advanceTimersByTimeAsync(1000);
+      await refuseCurrent();
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(onSessionRefused).toHaveBeenCalledTimes(1);
+      await expect(conn.whenReady()).rejects.toThrow(/refused this session/i);
+    });
+
+    it('never puts the signed URL in an error message', async () => {
+      const conn = new RuntimeConnectionImpl({ ...defaultConfig, wsEndpoint: SIGNED, reconnect: false });
+      const result = conn.connect().catch((e: Error) => e);
+
+      await vi.advanceTimersByTimeAsync(10);
+      mockWsInstance.simulateError();
+
+      const err = (await result) as Error;
+      expect(err.message).not.toContain('SECRETSIG');
+      expect(err.message).not.toContain('Policy=');
+      expect(err.message).toContain('wss://vibe.test/ws/sess-1');
+    });
+  });
+
+  describe('redactWsUrl', () => {
+    it('drops the query string, which carries the CloudFront signature', () => {
+      expect(redactWsUrl('wss://vibe.test/ws/sess-1?Policy=p&Signature=s&Key-Pair-Id=k')).toBe('wss://vibe.test/ws/sess-1');
+    });
+
+    it('returns a placeholder for something it cannot parse', () => {
+      expect(redactWsUrl('not a url?Signature=s')).toBe('[unparseable url]');
     });
   });
 });

@@ -99,10 +99,11 @@ export const LiveShareButton = memo(() => {
 
       try {
         await navigator.clipboard.writeText(link);
-        toast.success('Invite link copied — it expires in 30 minutes');
+        // Matches INVITE_TTL_SECONDS in the session manager, which enforces it.
+        toast.success('Invite link copied — it works once and expires in 3 days');
       } catch {
         // Clipboard access can be denied; the link is useless if we swallow it.
-        toast.info(`Invite link (expires in 30 min): ${link}`, { autoClose: false });
+        toast.info(`Invite link (works once, expires in 3 days): ${link}`, { autoClose: false });
       }
     } catch (err) {
       logger.error('Failed to create invite:', err);

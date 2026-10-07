@@ -1,5 +1,6 @@
 import { atom } from 'nanostores';
 import type { RuntimeConnection, PortOpenEvent, PortCloseEvent, WSResponse } from '~/lib/runtime/types';
+import { resolvePreviewUrl } from '~/lib/preview/preview-frame';
 import { createScopedLogger } from '~/utils/logger';
 
 const logger = createScopedLogger('PreviewsStore');
@@ -22,7 +23,7 @@ const BUILD_OUTPUT_MAX_LINES = 12;
 /**
  * The only port the preview route can actually serve.
  *
- * `/sandbox-preview/{sessionId}/` is proxied to Vite on 5173 by the sidecar, with
+ * `/sandbox-preview/{sessionId}/` (on the untrusted-content origin) is proxied to Vite on 5173 by the sidecar, with
  * the target hard-coded (`sandbox-container/agent/src/server.ts:78`) — the URL does
  * not carry the port at all. So a preview published for any other port produces a
  * URL that still proxies to 5173, which is the app if it happens to be up and a 503
@@ -379,19 +380,29 @@ export class PreviewsStore {
   }
 
   /**
-   * Rewrite the localhost URL from the sidecar to a CloudFront-proxied URL.
+   * Rewrite the localhost URL from the sidecar to the CloudFront-proxied URL on
+   * the untrusted-content origin.
+   *
+   * Never the app's own origin: the preview runs generated code, which there
+   * could read the user's auth tokens. With no untrusted origin known the
+   * localhost URL is kept, which simply fails to load.
    */
   #rewritePreviewUrl(url: string, port: number): string {
     if (typeof window === 'undefined') return url;
 
     if (window.location.protocol === 'https:') {
-      const sessionId = (window as any).__SANDBOX_SESSION_ID__ || '';
+      const resolved = resolvePreviewUrl({
+        previewUrl: (window as any).__SANDBOX_PREVIEW_URL__,
+        previewDomain: (window as any).__SANDBOX_PREVIEW_DOMAIN__,
+        sessionId: (window as any).__SANDBOX_SESSION_ID__,
+        appOrigin: window.location.origin,
+      });
 
-      if (sessionId) {
-        return `${window.location.origin}/sandbox-preview/${sessionId}/`;
+      if (resolved) {
+        return resolved;
       }
 
-      return `${window.location.origin}/sandbox-preview/`;
+      logger.warn('No untrusted preview origin for this session; not loading the preview on the app origin');
     }
 
     return url;

@@ -64,8 +64,9 @@ export async function validateCloudFrontRequest(request: Request): Promise<boole
         });
 
         if (!customHeader) {
+            // Header names only: values include the caller's bearer token.
             console.warn(`[SECURITY_VALIDATION] ❌ Missing X-Custom-Header`, {
-                allHeaders: Object.fromEntries(request.headers.entries()),
+                headerNames: [...request.headers.keys()],
                 duration: Date.now() - startTime,
             });
             return false;
@@ -97,8 +98,6 @@ export async function validateCloudFrontRequest(request: Request): Promise<boole
             console.warn(`[SECURITY_VALIDATION] ❌ Invalid X-Custom-Header value`, {
                 receivedLength: customHeader.length,
                 expectedLength: expectedSecret.length,
-                receivedPrefix: customHeader.substring(0, 8) + '...',
-                expectedPrefix: expectedSecret.substring(0, 8) + '...',
                 duration: Date.now() - startTime,
             });
         } else {

@@ -18,20 +18,27 @@ import {
   addMember,
   createInvite,
   getInvite,
+  findInvite,
   claimInvite,
+  markInviteRevoked,
   deleteInvite,
+  removeMember,
   newInviteRecord,
-  setBoundContainer,
   addProjectMember,
+  removeProjectMember,
+  getProjectOwner,
 } from './sessions';
-import { claimWarmTask, stopTask } from './ecs-manager';
-import { signWsUrl, getSigningKey } from './ws-signed-url';
+import { previewUrlFor } from './preview-url';
 import {
-  provisionSessionRouting,
-  teardownSessionRouting,
-  taskIpFromContainerId,
-} from './alb-routing';
-import type { ApiResponse } from './types';
+  claimWarmTask,
+  listAssignedTasks,
+  stopTask,
+  tagTaskForSession,
+  type TaskInfo,
+} from './ecs-manager';
+import { signWsUrl, getSigningKey } from './ws-signed-url';
+import { provisionSessionRouting, reconcileOrphanRouting, teardownSessionRouting } from './alb-routing';
+import type { ApiResponse, Session } from './types';
 
 const PREVIEW_DOMAIN = process.env.PREVIEW_DOMAIN || 'preview.vibe.proserve.aws.dev';
 const CLOUDFRONT_DOMAIN_PARAM = process.env.CLOUDFRONT_DOMAIN_PARAM || '';
@@ -137,24 +144,20 @@ function getAuthenticatedUserId(event: APIGatewayProxyEvent): string | null {
     return null;
   }
 
-  console.log('[auth] Authorizer context keys:', Object.keys(authorizer));
-
+  // Nothing from the authorizer context is logged: it can carry token claims,
+  // and identities are not needed to diagnose a missing one.
   if (authorizer.userId) {
-    console.log('[auth] Resolved userId from custom authorizer:', authorizer.userId);
     return authorizer.userId;
   }
   if (authorizer.principalId) {
-    console.log('[auth] Resolved userId from principalId:', authorizer.principalId);
     return authorizer.principalId;
   }
 
   if (authorizer.claims) {
-    const userId = authorizer.claims.sub || authorizer.claims['cognito:username'] || null;
-    console.log('[auth] Resolved userId from Cognito claims:', userId);
-    return userId;
+    return authorizer.claims.sub || authorizer.claims['cognito:username'] || null;
   }
 
-  console.warn('[auth] Could not extract userId from authorizer context:', JSON.stringify(authorizer));
+  console.warn('[auth] Could not extract userId from authorizer context');
   return null;
 }
 
@@ -218,11 +221,6 @@ export async function handler(
       return await handleRevokeInvite(apiEvent, sessionId, authenticatedUserId);
     }
 
-    // POST /session/{id}/bind — pin routing to the container that answered
-    if (httpMethod === 'POST' && path.endsWith('/bind')) {
-      return await handleBindContainer(apiEvent, sessionId, authenticatedUserId);
-    }
-
     // POST /session/{id}/heartbeat — update last activity
     if (httpMethod === 'POST' && path.endsWith('/heartbeat')) {
       return await handleHeartbeat(sessionId, authenticatedUserId);
@@ -271,10 +269,40 @@ async function buildWsUrl(sessionId: string): Promise<string> {
   return signWsUrl(wsDomain, sessionId, await getSigningKey());
 }
 
+/** Concurrent creates can pick the same free task; only one wins its claim lock. */
+const MAX_CLAIM_ATTEMPTS = 3;
+
+/**
+ * Claim an unused warm task for a session, holding its DynamoDB claim lock.
+ *
+ * Losing the lock race to another session moves on to the next unused task
+ * rather than failing outright. Any other error is thrown.
+ */
+async function claimTaskForSession(sessionId: string): Promise<TaskInfo> {
+  const tried = new Set<string>();
+
+  for (let attempt = 1; ; attempt++) {
+    const claimedArns = await getClaimedTaskArns();
+    const taskInfo = await claimWarmTask(sessionId, claimedArns, tried);
+
+    try {
+      await setTaskInfo(sessionId, taskInfo.taskArn, taskInfo.privateIp);
+      return taskInfo;
+    } catch (err) {
+      const lostRace = (err as { name?: string }).name === 'TransactionCanceledException';
+
+      if (!lostRace || attempt >= MAX_CLAIM_ATTEMPTS) {
+        throw err;
+      }
+
+      tried.add(taskInfo.taskArn);
+    }
+  }
+}
+
 async function handleCreateSession(userId: string): Promise<ApiResponse> {
-  // Retire existing session DB record but keep the ECS task running.
-  // The task becomes unclaimed and immediately available for the new session.
-  // The sidecar cleans the workdir when it sees the new sessionId on connect.
+  // The caller's existing session, if any, is retired below (task stopped,
+  // routing torn down) unless someone else is sharing it.
   const existing = await getActiveSessionByUser(userId);
 
   // A session with a guest in it is not the caller's alone to throw away.
@@ -303,39 +331,49 @@ async function handleCreateSession(userId: string): Promise<ApiResponse> {
 
     // The reload itself is activity. Without this a reconnecting owner could still
     // lose the session to the idle reaper mid-reload.
-    await updateLastActivity(existing.sessionId);
+    await updateLastActivity(existing.sessionId, existing.taskArn);
 
     return response(200, {
       sessionId: existing.sessionId,
       wsUrl: await buildWsUrl(existing.sessionId),
       previewDomain: `${existing.sessionId}.${PREVIEW_DOMAIN}`,
+      previewUrl: previewUrlFor(existing.sessionId),
       resumed: true,
     });
   }
 
   if (existing) {
-    console.log(`Retiring session ${existing.sessionId} for user ${userId} (keeping ECS task for reuse)`);
-    await updateSessionStatus(existing.sessionId, 'STOPPED');
-    if (existing.taskArn) {
-      await deleteClaimLock(existing.taskArn);
-    }
-    await teardownSessionRouting(existing.sessionId);
+    // Its task is stopped, not kept warm: a container serves one session for its
+    // lifetime and is replaced between tenants rather than cleaned up.
+    console.log(`Retiring session ${existing.sessionId} for user ${userId} (stopping its task)`);
+    await endSession(existing, 'Replaced by a new session');
   }
 
   // Create new session record
   const session = newSessionRecord(userId);
   await createSession(session);
 
-  // Claim a warm pool task — cross-reference DynamoDB to skip already-claimed containers
-  try {
-    const claimedArns = await getClaimedTaskArns();
-    const taskInfo = await claimWarmTask(session.sessionId, claimedArns);
-    await setTaskInfo(session.sessionId, taskInfo.taskArn, taskInfo.privateIp);
+  // Set once this session holds the task's claim lock, so a failure after that
+  // point knows it has a task to release.
+  let claimedTaskArn: string | null = null;
 
-    // Pin this session's traffic to the container we just claimed, so every
-    // collaborator who opens it reaches the same one. Deliberately not fatal: on
-    // failure the session still works via the shared catch-all route.
-    await provisionSessionRouting(session.sessionId, taskInfo.privateIp);
+  try {
+    const taskInfo = await claimTaskForSession(session.sessionId);
+    claimedTaskArn = taskInfo.taskArn;
+
+    // Assign the task before anything can connect to it. The sidecar accepts
+    // only the session in this tag, so it must be in place before the URL is
+    // signed; if tagging fails no URL is issued.
+    await tagTaskForSession(taskInfo.taskArn, session.sessionId);
+
+    // Route this session's traffic to the container just claimed. Fatal on
+    // failure: there is no shared fallback route (it used to land sessions on
+    // arbitrary containers), so a session without a rule cannot be served.
+    const routing = await provisionSessionRouting(session.sessionId, taskInfo.privateIp);
+
+    if (!routing) {
+      throw new Error('Could not provision session routing');
+    }
 
     const wsUrl = await buildWsUrl(session.sessionId);
 
@@ -346,10 +384,19 @@ async function handleCreateSession(userId: string): Promise<ApiResponse> {
       sessionId: session.sessionId,
       wsUrl,
       previewDomain: `${session.sessionId}.${PREVIEW_DOMAIN}`,
+      previewUrl: previewUrlFor(session.sessionId),
     });
   } catch (err) {
     console.error('Failed to claim warm task:', err);
-    await updateSessionStatus(session.sessionId, 'STOPPED');
+
+    // Release everything the claim got as far as creating. If this session took
+    // the task's claim lock, the task may already carry its tag, so it is
+    // stopped rather than returned to the pool. If the race was lost, the task
+    // belongs to someone else and is left alone.
+    await endSession(
+      { ...session, taskArn: claimedTaskArn ?? '' },
+      'Session claim failed',
+    );
 
     // Publish metric even on failure — auto-scaling needs to know we're at capacity
     publishAvailabilityMetric().catch(() => {});
@@ -386,27 +433,51 @@ async function handleCreateInvite(
   // The inviter passes the project they have open, so redeeming the invite can
   // grant its conversation too. Optional: a session without a project (nothing
   // built yet) still shares fine, just with no history to hand over.
-  let projectId: string | undefined;
+  let requestedProjectId: unknown;
   try {
-    projectId = (JSON.parse(apiEvent.body ?? '{}') as { projectId?: string }).projectId;
+    requestedProjectId = (JSON.parse(apiEvent.body ?? '{}') as { projectId?: unknown }).projectId;
   } catch {
     // A malformed body only costs the chat handover, not the invite.
+  }
+
+  if (
+    requestedProjectId !== undefined &&
+    requestedProjectId !== null &&
+    (typeof requestedProjectId !== 'string' || requestedProjectId.length === 0 || requestedProjectId.length > 256)
+  ) {
+    return response(400, { error: 'projectId must be a non-empty string' });
+  }
+
+  // The project is caller-supplied, so it is only carried if the caller owns it.
+  // Otherwise anyone with a session could mint a link that, once redeemed, writes
+  // a membership row into somebody else's project.
+  let projectId: string | undefined;
+  if (typeof requestedProjectId === 'string') {
+    const ownerId = await getProjectOwner(requestedProjectId);
+
+    if (ownerId !== null && ownerId !== authenticatedUserId) {
+      return response(403, { error: 'Only the project owner can share it' });
+    }
+
+    // A project that does not exist (yet) is dropped rather than carried: if it
+    // were carried, whoever later creates a project with that id would hand it to
+    // the redeemer. The invite still shares the sandbox.
+    projectId = ownerId === authenticatedUserId ? requestedProjectId : undefined;
   }
 
   const invite = newInviteRecord(sessionId, authenticatedUserId, projectId);
   await createInvite(invite);
 
-  // No expiry to report: the link lasts until it is redeemed or revoked.
-  return response(201, { token: invite.token });
+  return response(201, { token: invite.token, expiresAt: invite.expiresAt });
 }
 
 /**
- * Revoke an invite link. Owner-only, for the same reason minting one is: a
- * collaborator does not get to manage access to someone else's sandbox.
+ * Revoke an invite link, and with it the access it granted.
  *
- * This is the counterweight to invites no longer expiring. A link that was pasted
- * into the wrong channel used to become harmless after thirty minutes; now the
- * owner has to be able to make it harmless on demand, which is what this does.
+ * Owner-only, for the same reason minting one is: a collaborator does not get to
+ * manage access to someone else's sandbox. Revoking a link someone has already
+ * redeemed removes that person from the session and from the project the link
+ * shared, so revocation means the access is gone, not only the link.
  *
  * The token arrives in the query string rather than the path so it is not
  * mistaken for a session id by the `/session/{id}` routes, and rather than in a
@@ -433,62 +504,34 @@ async function handleRevokeInvite(
     return response(400, { error: 'Missing invite token' });
   }
 
-  await deleteInvite(token);
+  const invite = await findInvite(token);
+
+  // Only an invite into *this* session is the caller's to revoke. One for a
+  // different session is left untouched, and answered exactly like an unknown
+  // token so the response confirms nothing about tokens that are not theirs.
+  if (invite && invite.sessionId === sessionId && invite.invitedBy === authenticatedUserId) {
+    // Order matters. Marking it revoked first makes any concurrent re-claim fail,
+    // so the removals below cannot be undone by a join racing them; the record is
+    // only deleted once the access it granted is gone, so a failure part-way can
+    // be retried with the same token.
+    await markInviteRevoked(invite);
+
+    const redeemer = invite.redeemedBy;
+    if (redeemer && redeemer !== session.userId) {
+      await removeMember(sessionId, redeemer);
+
+      if (invite.projectId) {
+        await removeProjectMember(invite.projectId, redeemer);
+      }
+    }
+
+    await deleteInvite(invite);
+  }
 
   // Deliberately the same answer whether or not the token existed: an owner
   // revoking a link they already revoked has got what they asked for, and the
-  // response must not confirm which of their tokens are live.
+  // response must not confirm which tokens are live.
   return response(200, { ok: true });
-}
-
-/**
- * Pin this session's routing to the container that actually answered.
- *
- * Claiming a warm task only writes a DynamoDB record; nothing tells the container
- * it now owns the session, so the claim is a guess until a connection lands. The
- * sidecar reports its own hostname in `system:ready`, and the client reports it
- * back here, which makes the container the authority on the binding. Every later
- * collaborator then routes to the same box.
- *
- * Owner-only: a collaborator must not be able to repoint someone else's session.
- * Idempotent, so the common case of re-reporting the same container is cheap.
- */
-async function handleBindContainer(
-  apiEvent: APIGatewayProxyEvent,
-  sessionId: string,
-  authenticatedUserId: string,
-): Promise<ApiResponse> {
-  let containerId: string | undefined;
-  try {
-    containerId = (JSON.parse(apiEvent.body ?? '{}') as { containerId?: string }).containerId;
-  } catch {
-    return response(400, { error: 'Invalid request body' });
-  }
-
-  const privateIp = taskIpFromContainerId(containerId);
-
-  if (!privateIp) {
-    return response(400, { error: 'Unrecognised container id' });
-  }
-
-  const session = await getSession(sessionId);
-
-  if (!session) {
-    return response(404, { error: 'Session not found' });
-  }
-
-  if (session.userId !== authenticatedUserId) {
-    return response(403, { error: 'Only the session owner can bind a container' });
-  }
-
-  if (session.privateIp === privateIp) {
-    return response(200, { ok: true, rebound: false });
-  }
-
-  await setBoundContainer(sessionId, privateIp);
-  const routing = await provisionSessionRouting(sessionId, privateIp);
-
-  return response(200, { ok: true, rebound: true, routed: routing !== null });
 }
 
 /**
@@ -502,14 +545,14 @@ async function handleJoinSession(
   apiEvent: APIGatewayProxyEvent,
   authenticatedUserId: string,
 ): Promise<ApiResponse> {
-  let token: string | undefined;
+  let token: unknown;
   try {
-    token = (JSON.parse(apiEvent.body ?? '{}') as { token?: string }).token;
+    token = (JSON.parse(apiEvent.body ?? '{}') as { token?: unknown }).token;
   } catch {
     return response(400, { error: 'Invalid request body' });
   }
 
-  if (!token) {
+  if (typeof token !== 'string' || token.length === 0 || token.length > 256) {
     return response(400, { error: 'Missing invite token' });
   }
 
@@ -523,6 +566,13 @@ async function handleJoinSession(
   const session = await getSession(invite.sessionId);
   if (!session) {
     return response(404, { error: 'Session not found' });
+  }
+
+  // Only the session's owner can hand out access to it. Invite creation already
+  // enforces this; re-checking here means a record that somehow names a different
+  // minter (or a session that changed hands) grants nothing.
+  if (invite.invitedBy !== session.userId) {
+    return response(403, { error: 'Invite is invalid or has expired' });
   }
 
   if (session.status !== 'ACTIVE') {
@@ -540,7 +590,7 @@ async function handleJoinSession(
   //
   // Re-claiming as the same user succeeds, which is what keeps a guest's own
   // reload working: their browser has only the token to reconnect with.
-  if (!alreadyIn && !(await claimInvite(token, authenticatedUserId))) {
+  if (!alreadyIn && !(await claimInvite(invite, authenticatedUserId))) {
     return response(403, { error: 'Invite is invalid or has already been used' });
   }
 
@@ -548,15 +598,26 @@ async function handleJoinSession(
     await addMember(session.sessionId, authenticatedUserId);
   }
 
+  // The project is only honoured if the person who minted the invite owns it
+  // now. Creation checks this too, but links minted before that check existed
+  // can carry anyone's project id.
+  const sharedProjectId =
+    invite.projectId && (await getProjectOwner(invite.projectId)) === invite.invitedBy
+      ? invite.projectId
+      : undefined;
+
   // Grant the conversation as well as the container. Sharing only the sandbox
   // leaves the guest looking at files with no history behind them and an AI with
   // nothing to continue. Best-effort: failing here must not cost them the session
   // they were invited to.
-  if (invite.projectId) {
+  //
+  // Only on the redemption that let them in. A member re-using the link must not
+  // be re-granted a project the owner has since removed them from.
+  if (sharedProjectId && !alreadyIn) {
     try {
-      await addProjectMember(invite.projectId, authenticatedUserId);
+      await addProjectMember(sharedProjectId, authenticatedUserId);
     } catch (err) {
-      console.warn('[join] Could not grant project access:', err);
+      console.warn('[join] Could not grant project access:', (err as Error)?.name);
     }
   }
 
@@ -564,7 +625,8 @@ async function handleJoinSession(
     sessionId: session.sessionId,
     wsUrl: await buildWsUrl(session.sessionId),
     previewDomain: `${session.sessionId}.${PREVIEW_DOMAIN}`,
-    projectId: invite.projectId,
+    previewUrl: previewUrlFor(session.sessionId),
+    projectId: sharedProjectId,
   });
 }
 
@@ -585,6 +647,7 @@ async function handleGetSession(sessionId: string, authenticatedUserId: string):
   return response(200, {
     session,
     wsUrl: await buildWsUrl(session.sessionId),
+    previewUrl: previewUrlFor(session.sessionId),
   });
 }
 
@@ -605,9 +668,54 @@ async function handleHeartbeat(sessionId: string, authenticatedUserId: string): 
     return response(409, { error: `Session is ${session.status}` });
   }
 
-  await updateLastActivity(sessionId);
+  await updateLastActivity(sessionId, session.taskArn || undefined);
 
   return response(200, { ok: true });
+}
+
+/**
+ * End a session: stop its task, release its claim lock, tear down its routing.
+ *
+ * Each step is isolated so one failing cannot skip the others — the routing
+ * teardown in particular always runs, because a rule left behind leaks a slot on
+ * a listener with a 100-rule quota. The session is only marked STOPPED once its
+ * task is confirmed stopped; otherwise it stays STOPPING and the cleanup cron
+ * (which reaps stuck STOPPING sessions) retries.
+ */
+async function endSession(session: Session, reason: string): Promise<void> {
+  const { sessionId, taskArn } = session;
+  let taskStopped = !taskArn;
+
+  try {
+    await updateSessionStatus(sessionId, 'STOPPING');
+  } catch (err) {
+    console.error(`[end] Could not mark ${sessionId} STOPPING:`, err);
+  }
+
+  if (taskArn) {
+    try {
+      await stopTask(taskArn, reason);
+      taskStopped = true;
+    } catch (err) {
+      console.error(`[end] Could not stop task for ${sessionId}:`, err);
+    }
+  }
+
+  await teardownSessionRouting(sessionId);
+
+  if (!taskStopped) {
+    return;
+  }
+
+  if (taskArn) {
+    await deleteClaimLock(taskArn);
+  }
+
+  try {
+    await updateSessionStatus(sessionId, 'STOPPED');
+  } catch (err) {
+    console.error(`[end] Could not mark ${sessionId} STOPPED:`, err);
+  }
 }
 
 async function handleDeleteSession(sessionId: string, authenticatedUserId: string): Promise<ApiResponse> {
@@ -627,15 +735,7 @@ async function handleDeleteSession(sessionId: string, authenticatedUserId: strin
     return response(200, { ok: true, message: 'Already stopped' });
   }
 
-  await updateSessionStatus(sessionId, 'STOPPING');
-
-  if (session.taskArn) {
-    await stopTask(session.taskArn, 'User requested stop');
-    await deleteClaimLock(session.taskArn);
-  }
-
-  await teardownSessionRouting(sessionId);
-  await updateSessionStatus(sessionId, 'STOPPED');
+  await endSession(session, 'User requested stop');
 
   publishAvailabilityMetric().catch(() => {});
 
@@ -644,38 +744,109 @@ async function handleDeleteSession(sessionId: string, authenticatedUserId: strin
 
 /**
  * Cleanup handler — runs on a 5-minute EventBridge cron.
- * Stops sessions that have been idle for >30 minutes.
+ * Ends sessions idle for >30 minutes and ones stuck PENDING or STOPPING.
  * Also publishes availability metrics for auto-scaling.
  */
 async function handleCleanup(): Promise<void> {
   console.log('Running session cleanup');
 
   const idleSessions = await getIdleSessions();
-  console.log(`Found ${idleSessions.length} idle sessions`);
+  console.log(`Found ${idleSessions.length} idle or stuck sessions`);
 
   for (const session of idleSessions) {
     try {
-      console.log(`Stopping idle session ${session.sessionId} (last activity: ${new Date(session.lastActivity).toISOString()})`);
-
-      await updateSessionStatus(session.sessionId, 'STOPPING');
-
-      if (session.taskArn) {
-        await stopTask(session.taskArn, 'Idle timeout');
-        await deleteClaimLock(session.taskArn);
-      }
-
-      await teardownSessionRouting(session.sessionId);
-      await updateSessionStatus(session.sessionId, 'STOPPED');
+      console.log(
+        `Ending ${session.status} session ${session.sessionId} (last activity: ${new Date(session.lastActivity).toISOString()})`,
+      );
+      await endSession(session, session.status === 'ACTIVE' ? 'Idle timeout' : `Stuck ${session.status}`);
     } catch (err) {
       console.error(`Failed to stop session ${session.sessionId}:`, err);
     }
   }
+
+  // Sweep up what sessions that ended without a clean teardown left behind.
+  const routing = await reconcileOrphanRouting(isSessionOrphaned);
+  console.log(
+    `[reconcile] session rules=${routing.sessionRuleCount} deleted rules=${routing.deletedRules} ` +
+      `target groups=${routing.deletedTargetGroups}`,
+  );
+  await publishSessionRuleCount(routing.sessionRuleCount);
+  await stopOrphanTasks();
 
   // Always publish metrics on cleanup — even if no sessions were stopped.
   // This ensures auto-scaling gets a signal every 5 minutes.
   await publishAvailabilityMetric();
 
   console.log('Cleanup complete');
+}
+
+/** How long a STOPPED session's leftovers are left alone, in case its teardown is still running. */
+const ORPHAN_GRACE_MS = 10 * 60 * 1000;
+
+/** Most orphan tasks stopped per cleanup run, so a bad answer cannot drain the pool at once. */
+const MAX_ORPHAN_TASK_STOPS = 10;
+
+/**
+ * Whether a session's routing and task may be reclaimed: its record is gone, or
+ * it has been STOPPED for longer than the grace period. A lookup failure answers
+ * "no", so reconciliation never deletes on a guess.
+ */
+async function isSessionOrphaned(sessionId: string): Promise<boolean> {
+  try {
+    const session = await getSession(sessionId);
+
+    if (!session) {
+      return true;
+    }
+
+    if (session.status !== 'STOPPED') {
+      return false;
+    }
+
+    return !session.statusChangedAt || session.statusChangedAt < Date.now() - ORPHAN_GRACE_MS;
+  } catch (err) {
+    console.warn(`[reconcile] Could not look up session ${sessionId}:`, err);
+    return false;
+  }
+}
+
+/** Stop running tasks still assigned to a session that has ended. Never throws. */
+async function stopOrphanTasks(): Promise<void> {
+  try {
+    let stopped = 0;
+
+    for (const { taskArn, sessionId } of await listAssignedTasks()) {
+      if (stopped >= MAX_ORPHAN_TASK_STOPS) {
+        break;
+      }
+
+      if (await isSessionOrphaned(sessionId)) {
+        console.log(`[reconcile] Stopping task of ended session ${sessionId}`);
+        await stopTask(taskArn, 'Session ended');
+        stopped++;
+      }
+    }
+  } catch (err) {
+    console.warn('[reconcile] Orphan task sweep failed:', err);
+  }
+}
+
+/** Alarmed on in the stack: the listener's rule quota is what ran out in prod. */
+async function publishSessionRuleCount(count: number): Promise<void> {
+  const namespace = process.env.METRIC_NAMESPACE;
+
+  if (!namespace) {
+    return;
+  }
+
+  try {
+    await cwClient.send(new PutMetricDataCommand({
+      Namespace: namespace,
+      MetricData: [{ MetricName: 'SessionRuleCount', Value: count, Unit: 'Count', Timestamp: new Date() }],
+    }));
+  } catch (err) {
+    console.warn('[metrics] Failed to publish SessionRuleCount:', err);
+  }
 }
 
 function response(statusCode: number, body: any): ApiResponse {

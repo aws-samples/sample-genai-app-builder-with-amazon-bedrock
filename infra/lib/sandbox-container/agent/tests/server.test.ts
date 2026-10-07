@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { WebSocket, type WebSocketServer } from 'ws';
-import { startServer } from '../src/server.js';
+import { startServer, type ServerOptions } from '../src/server.js';
 
 function makeReq(type: string, payload: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -57,10 +57,31 @@ describe('WebSocket server', () => {
   let port: number;
   let tmpDir: string;
 
+  /**
+   * The session the session manager tagged this task with. Stands in for the
+   * `SandboxSession` ECS task tag the sidecar reads at bind time.
+   */
+  let assigned: string | null;
+  let retired: number;
+
+  /** Start a server whose task is assigned the `assigned` session. */
+  function start(options: ServerOptions = {}): WebSocketServer {
+    wss = startServer(port, {
+      resolveAssignedSession: async () => assigned,
+      onRetire: () => {
+        retired++;
+      },
+      ...options,
+    });
+    return wss;
+  }
+
   beforeEach(async () => {
     port = 10000 + Math.floor(Math.random() * 50000);
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sandbox-server-test-'));
     process.env.WORKDIR = tmpDir;
+    assigned = randomUUID();
+    retired = 0;
   });
 
   afterEach(async () => {
@@ -78,7 +99,7 @@ describe('WebSocket server', () => {
    * Connect and set up message queue in one step so no messages are lost.
    */
   function connectWithQueue(sessionId?: string): Promise<{ ws: WebSocket; messages: ReturnType<typeof createMessageQueue> }> {
-    const sid = sessionId ?? randomUUID();
+    const sid = sessionId ?? assigned!;
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(`ws://localhost:${port}/ws/${sid}`);
       const messages = createMessageQueue(ws);
@@ -88,7 +109,7 @@ describe('WebSocket server', () => {
   }
 
   it('sends system:ready:event on connection', async () => {
-    wss = startServer(port);
+    start();
 
     const { ws, messages } = await connectWithQueue();
 
@@ -101,7 +122,7 @@ describe('WebSocket server', () => {
   });
 
   it('responds to system:ping:req with uptime', async () => {
-    wss = startServer(port);
+    start();
 
     const { ws, messages } = await connectWithQueue();
 
@@ -120,7 +141,7 @@ describe('WebSocket server', () => {
   });
 
   it('sends error event for invalid JSON', async () => {
-    wss = startServer(port);
+    start();
 
     const { ws, messages } = await connectWithQueue();
     await messages.next(); // ready event
@@ -135,7 +156,7 @@ describe('WebSocket server', () => {
   });
 
   it('sends error event for unknown namespace', async () => {
-    wss = startServer(port);
+    start();
 
     const { ws, messages } = await connectWithQueue();
     await messages.next(); // ready event
@@ -151,7 +172,7 @@ describe('WebSocket server', () => {
   });
 
   it('sends error event for non-request direction', async () => {
-    wss = startServer(port);
+    start();
 
     const { ws, messages } = await connectWithQueue();
     await messages.next(); // ready event
@@ -167,7 +188,7 @@ describe('WebSocket server', () => {
   });
 
   it('routes fs:read:req and returns an error for missing file', async () => {
-    wss = startServer(port);
+    start();
 
     const { ws, messages } = await connectWithQueue();
     await messages.next(); // ready event
@@ -183,10 +204,10 @@ describe('WebSocket server', () => {
   });
 
   it('returns 503 retry page for preview requests with wrong session ID', async () => {
-    wss = startServer(port);
+    start();
 
-    // Connect with session A to establish currentSessionId
-    const sidA = randomUUID();
+    // Connect with session A to establish the binding
+    const sidA = assigned!;
     const { ws, messages } = await connectWithQueue(sidA);
     await messages.next(); // ready event
 
@@ -202,9 +223,9 @@ describe('WebSocket server', () => {
   });
 
   it('proxies preview requests for the correct session ID', async () => {
-    wss = startServer(port);
+    start();
 
-    const sid = randomUUID();
+    const sid = assigned!;
     const { ws, messages } = await connectWithQueue(sid);
     await messages.next(); // ready event
 
@@ -221,9 +242,9 @@ describe('WebSocket server', () => {
   });
 
   it('cleans up when client disconnects', async () => {
-    wss = startServer(port);
+    start();
 
-    const sid = randomUUID();
+    const sid = assigned!;
     const { ws, messages } = await connectWithQueue(sid);
     await messages.next(); // ready event
 
@@ -248,8 +269,8 @@ describe('WebSocket server', () => {
    */
   describe('upgrade', () => {
     it('serves the session named in the path, ignoring CloudFront signing parameters', async () => {
-      wss = startServer(port);
-      const sid = randomUUID();
+      start();
+      const sid = assigned!;
       const ws = new WebSocket(
         `ws://localhost:${port}/ws/${sid}?Policy=abc~&Signature=def_-&Key-Pair-Id=K2TEST`,
       );
@@ -268,7 +289,7 @@ describe('WebSocket server', () => {
       ['an id under another path', (sid: string) => `/other/ws/${sid}`],
       ['an id followed by extra segments', (sid: string) => `/ws/${sid}/extra`],
     ])('refuses %s', async (_label, pathFor) => {
-      wss = startServer(port);
+      start();
       const ws = new WebSocket(`ws://localhost:${port}${pathFor(randomUUID())}`);
       const code = await new Promise<number>((resolve, reject) => {
         ws.on('close', (c) => resolve(c));
@@ -278,17 +299,37 @@ describe('WebSocket server', () => {
       expect(code).toBe(4000);
     });
   });
+  /** Open a socket for `sessionId` and resolve with the close code it receives. */
+  function expectClosed(sessionId: string, timeoutMs = 5000): Promise<{ code: number; reason: string }> {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(`ws://localhost:${port}/ws/${sessionId}`);
+      const timer = setTimeout(() => reject(new Error('connection was not closed')), timeoutMs);
+      ws.on('message', (data) => {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'system:ready:event') {
+          clearTimeout(timer);
+          reject(new Error(`session ${sessionId} was served`));
+        }
+      });
+      ws.on('close', (code, reason) => {
+        clearTimeout(timer);
+        resolve({ code, reason: reason.toString() });
+      });
+      ws.on('error', () => {
+        /* close event still fires */
+      });
+    });
+  }
+
   /**
    * Multi-peer safety. Two collaborators share one session (one container): the
-   * second peer must be adopted without disturbing the first peer's workspace,
-   * and a connection presenting a *foreign* session id while peers are live must
-   * be refused rather than allowed to wipe the workdir out from under them.
+   * second peer must be adopted without disturbing the first peer's workspace.
    */
   describe('multi-peer safety', () => {
     it('adopts a second peer on the same session without wiping the workdir', async () => {
-      wss = startServer(port);
+      start();
 
-      const sid = randomUUID();
+      const sid = assigned!;
       const { ws: a, messages: aMsgs } = await connectWithQueue(sid);
       await aMsgs.next(); // ready
 
@@ -308,41 +349,10 @@ describe('WebSocket server', () => {
       b.close();
     });
 
-    it('refuses a foreign session id while peers are connected, preserving their workdir', async () => {
-      wss = startServer(port);
-
-      const sid = randomUUID();
-      const { ws: a, messages: aMsgs } = await connectWithQueue(sid);
-      await aMsgs.next(); // ready
-
-      const marker = path.join(tmpDir, 'peer-a-work.txt');
-      await fs.writeFile(marker, 'important work');
-
-      // A stray client (e.g. mis-routed by the load balancer) presents a
-      // DIFFERENT session id while A is still live. It must be closed, not
-      // adopted — adopting it would clean the workdir and kill A's processes.
-      const strayId = randomUUID();
-      const stray = new WebSocket(`ws://localhost:${port}/ws/${strayId}`);
-      const closeCode = await new Promise<number>((resolve, reject) => {
-        stray.on('close', (code) => resolve(code));
-        stray.on('error', () => {
-          /* close event still fires */
-        });
-        setTimeout(() => reject(new Error('stray connection was not closed')), 5000);
-      });
-
-      expect(closeCode).toBe(4001);
-
-      // A's work must be untouched.
-      await expect(fs.readFile(marker, 'utf-8')).resolves.toBe('important work');
-
-      a.close();
-    });
-
     it('delivers shared filesystem events to every peer, not just the newest', async () => {
-      wss = startServer(port);
+      start();
 
-      const sid = randomUUID();
+      const sid = assigned!;
       const { ws: a, messages: aMsgs } = await connectWithQueue(sid);
       await aMsgs.next(); // ready
 
@@ -372,20 +382,138 @@ describe('WebSocket server', () => {
       a.close();
       b.close();
     });
+  });
 
-    it('still adopts a new session once the previous peers have all left', async () => {
-      wss = startServer(port);
+  /**
+   * Session binding (Sev2 SOC D550368291). A task serves exactly one session for
+   * its lifetime: the one the session manager tagged it with before signing the
+   * URL. Any other session id is refused with 4003 — while peers are live, after
+   * they have all left, and after the idle release — and the refused connection
+   * never touches the bound session's workdir or processes.
+   */
+  describe('session binding', () => {
+    it('refuses a foreign session while peers are connected, preserving their workdir', async () => {
+      start();
 
-      const first = randomUUID();
-      const { ws: a, messages: aMsgs } = await connectWithQueue(first);
+      const { ws: a, messages: aMsgs } = await connectWithQueue();
       await aMsgs.next(); // ready
+
+      const marker = path.join(tmpDir, 'peer-a-work.txt');
+      await fs.writeFile(marker, 'important work');
+
+      const closed = await expectClosed(randomUUID());
+      expect(closed.code).toBe(4003);
+      expect(closed.reason).toBe('Not assigned');
+
+      await expect(fs.readFile(marker, 'utf-8')).resolves.toBe('important work');
+      a.close();
+    });
+
+    it('refuses a foreign session after the bound user has disconnected, and keeps their workdir', async () => {
+      start();
+
+      const { ws: a, messages: aMsgs } = await connectWithQueue();
+      await aMsgs.next(); // ready
+      const marker = path.join(tmpDir, 'peer-a-work.txt');
+      await fs.writeFile(marker, 'important work');
+
       a.close();
       await new Promise((r) => setTimeout(r, 200));
 
-      // Room is empty now, so a genuinely new session is free to claim the box.
-      const { ws: b, messages: bMsgs } = await connectWithQueue(randomUUID());
-      const ready = await bMsgs.next();
-      expect(ready.type).toBe('system:ready:event');
+      // The room is empty. Previously the container adopted the newcomer here and
+      // wiped the previous user's work; it must refuse instead.
+      const closed = await expectClosed(randomUUID());
+      expect(closed.code).toBe(4003);
+
+      await expect(fs.readFile(marker, 'utf-8')).resolves.toBe('important work');
+
+      // And the rightful owner can still reconnect to their untouched workspace.
+      const { ws: again, messages } = await connectWithQueue();
+      expect((await messages.next()).type).toBe('system:ready:event');
+      again.close();
+    });
+
+    it('never re-binds to a second session, even if the assignment later changes', async () => {
+      start();
+
+      const first = assigned!;
+      const { ws: a, messages: aMsgs } = await connectWithQueue(first);
+      await aMsgs.next();
+      a.close();
+      await new Promise((r) => setTimeout(r, 100));
+
+      // Even a matching tag for a second session must not re-bind the task.
+      const second = randomUUID();
+      assigned = second;
+      expect((await expectClosed(second)).code).toBe(4003);
+    });
+
+    it('refuses the first connection when it does not match the task assignment, without wiping anything', async () => {
+      const marker = path.join(tmpDir, 'template.txt');
+      await fs.writeFile(marker, 'seed');
+      start();
+
+      expect((await expectClosed(randomUUID())).code).toBe(4003);
+      await expect(fs.readFile(marker, 'utf-8')).resolves.toBe('seed');
+
+      // The assigned session still binds afterwards.
+      const { ws, messages } = await connectWithQueue();
+      expect((await messages.next()).type).toBe('system:ready:event');
+      ws.close();
+    });
+
+    it('fails closed when the task has no assignment', async () => {
+      assigned = null;
+      start();
+
+      expect((await expectClosed(randomUUID())).code).toBe(4003);
+    });
+
+    it('fails closed when the assignment cannot be read', async () => {
+      start({
+        resolveAssignedSession: async () => {
+          throw new Error('metadata endpoint unavailable');
+        },
+      });
+
+      expect((await expectClosed(randomUUID())).code).toBe(4003);
+    });
+
+    it('does not serve another session preview before binding', async () => {
+      start();
+
+      const res = await fetch(`http://localhost:${port}/sandbox-preview/${assigned}/`);
+      // Not bound yet, so even the assigned session's preview gets the retry page.
+      expect(res.status).toBe(503);
+    });
+
+    it('retires the task once the last peer has been gone for the release window', async () => {
+      start({ releaseTimeoutMs: 100 });
+
+      const { ws: a, messages: aMsgs } = await connectWithQueue();
+      await aMsgs.next();
+      a.close();
+
+      await new Promise((r) => setTimeout(r, 400));
+      expect(retired).toBe(1);
+
+      // Retiring never frees the task for someone else.
+      expect((await expectClosed(randomUUID())).code).toBe(4003);
+    });
+
+    it('does not retire while a peer reconnects inside the release window', async () => {
+      start({ releaseTimeoutMs: 300 });
+
+      const { ws: a, messages: aMsgs } = await connectWithQueue();
+      await aMsgs.next();
+      a.close();
+      await new Promise((r) => setTimeout(r, 50));
+
+      const { ws: b, messages: bMsgs } = await connectWithQueue();
+      await bMsgs.next();
+      await new Promise((r) => setTimeout(r, 500));
+
+      expect(retired).toBe(0);
       b.close();
     });
   });

@@ -9,3 +9,17 @@ cognitoUsers:
 # alarmEmail:
 #   - "oncall@example.com"
 #   - "secondary@example.com"
+# Optional: user ids or emails allowed to read the analytics API, in addition
+# to members of the `analytics-admins` Cognito group.
+# analyticsAdmins:
+#   - "admin@example.com"
+# Optional: custom domain for the app (needs a Route 53 hosted zone for it).
+# customDomain: "vibe.example.com"
+# Optional but recommended with customDomain: a SEPARATE registrable domain for
+# untrusted content (live previews of generated apps, shared sites). Previews
+# are then served at https://<sessionId>.<previewDomain> and shared sites at
+# https://shared.<previewDomain>. Needs its own Route 53 hosted zone in this
+# account. Without it, untrusted content uses *.preview.<customDomain> (a
+# distinct origin, but same-site with the app), or the preview distribution's
+# own *.cloudfront.net host when there is no customDomain.
+# previewDomain: "vibe-preview.example.net"

@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react';
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { IconButton } from '~/components/ui/IconButton';
+import { PreviewFrame } from '~/lib/preview/preview-frame';
 import { workbenchStore } from '~/lib/stores/workbench';
 import { PortDropdown } from './PortDropdown';
 
@@ -123,7 +124,12 @@ export const Preview = memo(() => {
       </div>
       <div className="flex-1 border-t border-vibe-elements-borderColor">
         {activePreview ? (
-          <iframe ref={iframeRef} className="border-none w-full h-full bg-white" src={iframeUrl} />
+          <PreviewFrame
+            ref={iframeRef}
+            className="border-none w-full h-full bg-white"
+            src={iframeUrl}
+            appOrigin={typeof window === 'undefined' ? '' : window.location.origin}
+          />
         ) : (
           <div className="flex w-full h-full flex-col justify-center items-center bg-white gap-3">
             <div className="i-svg-spinners:90-ring-with-bg text-3xl text-vibe-elements-loader-progress"></div>

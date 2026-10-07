@@ -1,4 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as s3 from 'aws-cdk-lib/aws-s3';
@@ -14,6 +16,12 @@ export interface SandboxAlbProps {
    * requires it, so only this stack's distributions reach the containers.
    */
   originVerifyHeaderValue: string;
+  /**
+   * Certificate for the hostname CloudFront uses to reach this ALB. When set,
+   * the 443 listener terminates TLS. Without it the listener stays plain HTTP
+   * (no hostname we own can be put on a certificate), and a synth warning says so.
+   */
+  certificate?: acm.ICertificate;
 }
 
 /** Header CloudFront adds to every request it forwards to the sandbox ALB. */
@@ -27,7 +35,7 @@ export class SandboxAlb extends Construct {
   constructor(scope: Construct, id: string, props: SandboxAlbProps) {
     super(scope, id);
 
-    const { stackPrefix, vpc, albSg, logsBucket, originVerifyHeaderValue } = props;
+    const { stackPrefix, vpc, albSg, logsBucket, originVerifyHeaderValue, certificate } = props;
 
     // Only requests carrying this stack's origin-verify header are forwarded;
     // anything else falls through to the default 503.
@@ -85,9 +93,25 @@ export class SandboxAlb extends Construct {
 
     // HTTPS listener (port 443): default returns 503 for unmatched requests.
     // Static rules route /ws/* and /sandbox-preview/* to the sidecar TG.
+    //
+    // The construct id is unchanged from the plain-HTTP version, so switching
+    // protocol is an in-place listener update: the ARN the session manager uses
+    // (SANDBOX_ALB_LISTENER_ARN) and the per-session rules it created survive.
+    if (!certificate) {
+      cdk.Annotations.of(this).addWarning(
+        'Sandbox ALB: no certificate (no customDomain configured), so CloudFront reaches the ALB over ' +
+          'plain HTTP on port 443. Configure customDomain to encrypt this hop.',
+      );
+    }
     this.httpsListener = this.alb.addListener('HttpsListenerV2', {
       port: 443,
-      protocol: elbv2.ApplicationProtocol.HTTP, // Use HTTP for now; swap to HTTPS with cert
+      ...(certificate
+        ? {
+            protocol: elbv2.ApplicationProtocol.HTTPS,
+            certificates: [certificate],
+            sslPolicy: elbv2.SslPolicy.RECOMMENDED_TLS,
+          }
+        : { protocol: elbv2.ApplicationProtocol.HTTP }),
       open: false,
       defaultAction: elbv2.ListenerAction.fixedResponse(503, {
         contentType: 'text/plain',
@@ -95,33 +119,65 @@ export class SandboxAlb extends Construct {
       }),
     });
 
-    // WebSocket fallback: /ws/* → sidecar TG (round-robin).
+    // Session traffic is forwarded ONLY by the per-session rules the session
+    // manager creates for each claimed sandbox (priorities 100-800, see
+    // alb-routing.ts), each pinned to that session's one container.
     //
-    // Deliberately a high priority number. ALB evaluates rules in ascending
-    // priority and stops at the first match, so this path rule would shadow
-    // anything above it — and the session manager adds a per-session rule for
-    // each claimed sandbox (see alb-routing.ts) that must be evaluated first to
-    // land every collaborator on one container. This stays as the fallback for
-    // sessions that have no rule of their own.
+    // These static rules used to round-robin /ws/* and /sandbox-preview/* across
+    // the whole pool as a fallback, so a session with no rule of its own (for
+    // example once the listener hit its rule quota) landed on an arbitrary,
+    // possibly another tenant's, container (Sev2 SOC D550368291). They now fail
+    // closed with a 503. They sit above the per-session band so they never
+    // shadow it.
+    const noSessionRoute = elbv2.ListenerAction.fixedResponse(503, {
+      contentType: 'text/plain',
+      messageBody: 'No active sandbox session',
+    });
+
     new elbv2.ApplicationListenerRule(this, 'WsRoute', {
       listener: this.httpsListener,
       priority: 900,
       conditions: [elbv2.ListenerCondition.pathPatterns(['/ws/*']), fromOurCloudFront],
-      action: elbv2.ListenerAction.forward([this.sidecarTargetGroup]),
+      action: noSessionRoute,
     });
 
-    // Preview route: /sandbox-preview/* → sidecar TG (round-robin + sticky sessions).
-    // The sidecar proxies to the local Vite dev server on :5173 for matching sessions.
-    // Sticky sessions ensure that after the first successful hit, subsequent requests
-    // go to the same container.
     new elbv2.ApplicationListenerRule(this, 'PreviewRoute', {
       listener: this.httpsListener,
-      priority: 20,
+      priority: 910,
       conditions: [
         elbv2.ListenerCondition.pathPatterns(['/sandbox-preview', '/sandbox-preview/*']),
         fromOurCloudFront,
       ],
+      action: noSessionRoute,
+    });
+
+    // Keeps the pool target group attached to this load balancer, which ECS
+    // requires of a service's target group. Forwards only the sidecar's health
+    // path, which carries no session data.
+    new elbv2.ApplicationListenerRule(this, 'PoolHealthRoute', {
+      listener: this.httpsListener,
+      priority: 950,
+      conditions: [elbv2.ListenerCondition.pathPatterns(['/health']), fromOurCloudFront],
       action: elbv2.ListenerAction.forward([this.sidecarTargetGroup]),
+    });
+
+    // Per-session rules count against the listener's rule quota (100 by
+    // default). Prod exhausted it once; warn well before that happens again.
+    // The session manager publishes the count on every cleanup run.
+    new cloudwatch.Alarm(this, 'SessionRuleCountAlarm', {
+      alarmName: `${stackPrefix}-sandbox-session-rule-count`,
+      alarmDescription:
+        'Per-session ALB listener rules are approaching the listener rule quota; new sandbox sessions will fail',
+      metric: new cloudwatch.Metric({
+        namespace: `${stackPrefix}/Sandbox`,
+        metricName: 'SessionRuleCount',
+        statistic: 'Maximum',
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 80,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
   }
 }

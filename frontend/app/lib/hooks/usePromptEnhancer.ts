@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { templateSettingsStore } from '~/lib/stores/templateSettings';
 import { selectedModelId } from '~/lib/stores/model';
 import { createScopedLogger } from '~/utils/logger';
+import { requestEnhancement } from '~/lib/api/enhancer-client';
 
 const logger = createScopedLogger('usePromptEnhancement');
 
@@ -20,22 +21,33 @@ export function usePromptEnhancer() {
 
     logger.trace('Starting prompt enhancement', { inputLength: input.length });
 
-    const response = await fetch('/api/enhancer', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
+    let response: Response;
+
+    try {
+      response = await requestEnhancement({
         message: input,
         enableTemplate: templateSettingsStore.enableTemplate.get(),
         modelId: selectedModelId.get(),
-      }),
-    });
+      });
+    } catch (error) {
+      // No token (signed out) or a network failure: leave the prompt as typed.
+      logger.error('Enhancer request failed', error);
+      setEnhancingPrompt(false);
+      return;
+    }
 
     logger.trace('Enhancer response received', {
       status: response.status,
       ok: response.ok
     });
+
+    if (!response.ok) {
+      // e.g. 401 from the authorizer: keep the user's prompt rather than
+      // replacing it with an empty "enhancement".
+      logger.error('Enhancer rejected the request', { status: response.status });
+      setEnhancingPrompt(false);
+      return;
+    }
 
     const reader = response.body?.getReader();
 

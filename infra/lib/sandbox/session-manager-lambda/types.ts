@@ -6,7 +6,9 @@ export interface Session {
   status: 'PENDING' | 'ACTIVE' | 'STOPPING' | 'STOPPED';
   createdAt: number;
   lastActivity: number;
-  expiresAt: number; // TTL (epoch seconds)
+  expiresAt: number; // TTL (epoch seconds), extended on every heartbeat
+  /** Epoch ms of the last status change; absent on records written before it existed. */
+  statusChangedAt?: number;
   /**
    * Cognito user ids invited to co-edit this session, excluding the owner.
    * Absent on solo sessions — collaboration is opt-in, so nothing is written
@@ -18,34 +20,39 @@ export interface Session {
 /**
  * An invitation to co-edit a session.
  *
- * Stored in the sessions table under `INVITE#{token}` (following the existing
- * `TASK#{arn}` single-table convention). The token is the secret; it is
- * single-purpose (one session, one role), single-use, and revocable by deleting
- * the item.
+ * Stored in the sessions table under `INVITE#{sha256(token)}` (following the
+ * existing `TASK#{arn}` single-table convention). The token is a bearer secret
+ * and is never persisted; it is single-purpose (one session, one role),
+ * single-use, time-limited and revocable.
  */
 export interface Invite {
+  /** The plaintext bearer token. Only ever held in memory, never stored. */
   token: string;
+  /**
+   * The DynamoDB key the record was found under: the token's hash, or the raw
+   * token for links minted before hashing. Set on records read back.
+   */
+  recordKey?: string;
   sessionId: string;
-  /** Cognito user id of the inviter, for auditing and to reject self-invites. */
+  /** User id of the inviter. Must be the session owner for the invite to work. */
   invitedBy: string;
   role: 'editor';
   createdAt: number;
   /**
-   * TTL (epoch seconds), on links minted before invites became permanent.
-   *
-   * Never set on a new invite: the collaborator it lets in is meant to stay a
-   * member, so the link that grants that membership does not lapse. Still read,
-   * because links issued under the old 30-minute expiry must keep honouring it.
+   * When the link stops being redeemable (epoch seconds). Also the table's TTL
+   * attribute. Records minted without one are treated as expiring a full invite
+   * lifetime after `createdAt`.
    */
-  expiresAt?: number;
+  expiresAt: number;
   /**
-   * Cognito user id of whoever redeemed the link, once someone has.
+   * User id of whoever redeemed the link, once someone has.
    *
-   * This is what makes a permanent link safe: it grants access to one person, not
-   * to everyone it is ever forwarded to. The same user may redeem again — their
-   * browser does exactly that after a reload.
+   * A link grants access to one person, not to everyone it is forwarded to. The
+   * same user may redeem again. Revoking the invite removes this user's access.
    */
   redeemedBy?: string;
+  /** Set when the owner revokes the link; a revoked link can never be claimed. */
+  revokedAt?: number;
   /**
    * Project whose conversation the invite also grants, when the inviter had one
    * open.
@@ -60,12 +67,16 @@ export interface Invite {
 
 export interface CreateInviteResponse {
   token: string;
+  /** When the link stops being redeemable (epoch seconds). */
+  expiresAt: number;
 }
 
 export interface JoinSessionResponse {
   sessionId: string;
   wsUrl: string;
   previewDomain: string;
+  /** Live preview URL on the untrusted-content origin (never the app's). */
+  previewUrl?: string;
 }
 
 export interface CreateSessionRequest {
@@ -76,6 +87,8 @@ export interface CreateSessionResponse {
   sessionId: string;
   wsUrl: string;
   previewDomain: string;
+  /** Live preview URL on the untrusted-content origin (never the app's). */
+  previewUrl?: string;
   /**
    * True when the caller was handed the session they already had rather than a
    * new one — a reload of a session someone else is in. Present so a client can

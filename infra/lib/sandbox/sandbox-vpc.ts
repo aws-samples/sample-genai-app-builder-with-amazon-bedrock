@@ -9,6 +9,7 @@ export interface SandboxVpcProps {
 
 export class SandboxVpc extends Construct {
   public readonly vpc: ec2.Vpc;
+  public readonly bedrockRuntimeEndpoint: ec2.InterfaceVpcEndpoint;
 
   constructor(scope: Construct, id: string, props: SandboxVpcProps) {
     super(scope, id);
@@ -35,10 +36,21 @@ export class SandboxVpc extends Construct {
       ],
     });
 
+    // Private Bedrock runtime endpoint. Generated apps call Bedrock with the task
+    // role, and that role denies any call not arriving through this VPC
+    // (aws:SourceVpc), so credentials copied out of a container are useless
+    // elsewhere. Private DNS makes the SDK's default endpoint resolve here.
+    this.bedrockRuntimeEndpoint = this.vpc.addInterfaceEndpoint('BedrockRuntimeEndpoint', {
+      service: ec2.InterfaceVpcEndpointAwsService.BEDROCK_RUNTIME,
+      privateDnsEnabled: true,
+      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+    });
+
     // VPC Flow Logs to CloudWatch
     const flowLogGroup = new logs.LogGroup(this, 'FlowLogGroup', {
       logGroupName: `/aws/vpc/${stackPrefix}-sandbox-vpc/flow-logs`,
-      retention: logs.RetentionDays.ONE_MONTH,
+      // A year: these are the network record for untrusted sandbox code.
+      retention: logs.RetentionDays.ONE_YEAR,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 

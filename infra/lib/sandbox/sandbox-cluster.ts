@@ -6,6 +6,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import { Construct } from 'constructs';
+import { sandboxBedrockStatements } from './sandbox-bedrock-models';
 
 export interface SandboxClusterProps {
   stackPrefix: string;
@@ -47,19 +48,40 @@ export class SandboxCluster extends Construct {
       ephemeralStorageGiB: 30,
     });
 
-    // Allow sandbox containers to invoke Bedrock models (foundation models + inference profiles)
+    // Generated apps call Bedrock with the task role, so user code holds these
+    // credentials. Limit them to the advertised models and to calls made from
+    // inside the sandbox VPC (see sandbox-bedrock-models.ts). Besides the
+    // read-only tag lookup below, it is the only permission the task role has;
+    // image pull and logging are execution-role grants.
+    for (const statement of sandboxBedrockStatements({
+      region: cdk.Stack.of(this).region,
+      account: cdk.Stack.of(this).account,
+      vpcId: vpc.vpcId,
+    })) {
+      this.taskDefinition.taskRole.addToPrincipalPolicy(statement);
+    }
+
+    // The sidecar serves only the session named in its task's SandboxSession tag
+    // (written by the session manager at claim time). The Fargate metadata
+    // endpoint does not expose tags, so the sidecar reads them via the ECS API.
+    // Read-only and limited to this cluster's tasks.
     this.taskDefinition.taskRole.addToPrincipalPolicy(new iam.PolicyStatement({
-      actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+      actions: ['ecs:ListTagsForResource'],
       resources: [
-        'arn:aws:bedrock:*::foundation-model/*',
-        'arn:aws:bedrock:*:*:inference-profile/*',
+        cdk.Stack.of(this).formatArn({
+          service: 'ecs',
+          resource: 'task',
+          resourceName: `${this.cluster.clusterName}/*`,
+        }),
       ],
     }));
 
     // CloudWatch log group for the container
     const logGroup = new logs.LogGroup(this, 'ContainerLogGroup', {
       logGroupName: `/ecs/${stackPrefix}-sandbox`,
-      retention: logs.RetentionDays.ONE_MONTH,
+      // Kept a year for security investigations; must not drop below the
+      // retention already set on the deployed group.
+      retention: logs.RetentionDays.ONE_YEAR,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 

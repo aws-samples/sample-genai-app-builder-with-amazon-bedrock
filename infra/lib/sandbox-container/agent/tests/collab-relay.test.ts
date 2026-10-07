@@ -58,7 +58,15 @@ describe('collaboration relay (yjs namespace)', () => {
   let port: number;
   let tmpDir: string;
 
+  /** The session this task is assigned; see the binding tests in server.test.ts. */
+  let session: string;
+
+  function start(): WebSocketServer {
+    return startServer(port, { resolveAssignedSession: async () => session, onRetire: () => {} });
+  }
+
   beforeEach(async () => {
+    session = randomUUID();
     port = 10000 + Math.floor(Math.random() * 50000);
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sandbox-relay-test-'));
     process.env.WORKDIR = tmpDir;
@@ -85,10 +93,9 @@ describe('collaboration relay (yjs namespace)', () => {
   }
 
   it('relays a yjs:sync frame to a peer in the same session', async () => {
-    wss = startServer(port);
+    wss = start();
 
     // Two collaborators editing the SAME project share one session ID.
-    const session = randomUUID();
     const a = await connectWithQueue(session);
     await a.messages.next(); // ready event
     const b = await connectWithQueue(session);
@@ -110,9 +117,8 @@ describe('collaboration relay (yjs namespace)', () => {
   });
 
   it('relays yjs:awareness frames (presence) the same way', async () => {
-    wss = startServer(port);
+    wss = start();
 
-    const session = randomUUID();
     const a = await connectWithQueue(session);
     await a.messages.next();
     const b = await connectWithQueue(session);
@@ -130,9 +136,8 @@ describe('collaboration relay (yjs namespace)', () => {
   });
 
   it('does not echo a frame back to its sender', async () => {
-    wss = startServer(port);
+    wss = start();
 
-    const session = randomUUID();
     const a = await connectWithQueue(session);
     await a.messages.next();
     const b = await connectWithQueue(session);
@@ -158,18 +163,18 @@ describe('collaboration relay (yjs namespace)', () => {
   });
 
   it('never relays frames across different sessions (isolation)', async () => {
-    wss = startServer(port);
+    wss = start();
 
     // Two peers in session ONE relay to each other.
-    const sessionOne = randomUUID();
+    const sessionOne = session;
     const a = await connectWithQueue(sessionOne);
     await a.messages.next();
     const b = await connectWithQueue(sessionOne);
     await b.messages.next();
 
-    // A foreign session cannot even become co-resident on a container that is
-    // already serving live peers — it is refused at connect time (see the
-    // multi-peer guard in server.ts), which is a stronger isolation guarantee
+    // A foreign session cannot even become co-resident on a container: a task
+    // serves only the session it was assigned and refuses every other one at
+    // connect time (see session binding in server.ts), a stronger guarantee
     // than filtering its frames would be. Frame-level room isolation is covered
     // directly against the registry in room-registry.test.ts.
     const strayId = randomUUID();
@@ -181,7 +186,7 @@ describe('collaboration relay (yjs namespace)', () => {
       });
       setTimeout(() => reject(new Error('foreign session was not refused')), 5000);
     });
-    expect(strayClose).toBe(4001);
+    expect(strayClose).toBe(4003);
 
     // A broadcasts; B (same session) receives it.
     a.ws.send(JSON.stringify(makeReq('yjs:sync:req', { data: 'c2VjcmV0' })));
@@ -195,9 +200,8 @@ describe('collaboration relay (yjs namespace)', () => {
   });
 
   it('tolerates a solo editor (broadcast with no peers is a no-op)', async () => {
-    wss = startServer(port);
+    wss = start();
 
-    const session = randomUUID();
     const a = await connectWithQueue(session);
     await a.messages.next();
 

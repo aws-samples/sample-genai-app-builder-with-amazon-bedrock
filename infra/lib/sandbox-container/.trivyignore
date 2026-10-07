@@ -1,0 +1,16 @@
+# Accepted vulnerability findings for the sandbox image (read by scan-image.sh).
+#
+# Every entry needs a reason and an expiry so it is re-reviewed, e.g.:
+#   # node-pty build toolchain only, not reachable at runtime (owner: @alias)
+#   CVE-2026-00000 exp:2026-12-31
+#
+# Keep this list empty unless a finding has no upgrade path.
+
+# DoS in npm's own bundled brace-expansion / undici (usr/local/lib/node_modules/npm).
+# Only reachable when a user runs npm inside their own single-use sandbox; npm@latest
+# (installed in the Dockerfile) still bundles the vulnerable versions, so there is no
+# upgrade path yet. Re-check when npm ships brace-expansion >= 5.0.11 and
+# undici >= 6.28.1. (owner: @khalbabs, accepted 2026-10-07)
+CVE-2026-102276 exp:2026-11-07
+CVE-2026-102278 exp:2026-11-07
+CVE-2026-19534 exp:2026-11-07

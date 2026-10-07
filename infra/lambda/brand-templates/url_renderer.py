@@ -11,23 +11,38 @@ Responsibilities:
     tinycss2.
   * Grab the first reachable OG image or favicon as a palette seed.
 
-DNS is resolved *inside* the Lambda and validated before every HTTP call;
-the HTTPAdapter overrides connection IPs so the socket opens against the
-validated address even if the remote resolver changes between calls
-(defeats DNS rebinding).
+All network access goes through the shared SSRF-safe fetcher (safe_fetch.py):
+DNS is resolved inside the Lambda and every answer is validated before each
+hop (including redirects), and the socket is opened against the validated
+IP while TLS SNI / certificate checks and the Host header keep the original
+hostname (defeats DNS rebinding).
 """
 
 from __future__ import annotations
 
-import ipaddress
 import re
-import socket
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
-import requests
 import tinycss2
+
+from safe_fetch import (
+    PinnedTarget,
+    UrlFetchError,
+    UrlRejectedError,
+    default_resolver,
+    safe_get,
+    validate_url,
+)
+
+__all__ = [
+    "UrlFetchError",
+    "UrlRejectedError",
+    "UrlRenderer",
+    "UrlTokens",
+    "extract_css_tokens",
+]
 
 
 # Hard caps — every one of these is enforced before any read from the wire.
@@ -46,26 +61,6 @@ _ALLOWED_HTML_MIME = {"text/html", "application/xhtml+xml"}
 _ALLOWED_HTML_MIME_STARTSWITH = ("text/html",)
 
 _USER_AGENT = "bedrock-vibe-design-skills/1.0"
-
-# AWS and cloud metadata addresses — reject outright.
-_METADATA_ADDRS = {
-    ipaddress.ip_address("169.254.169.254"),
-    ipaddress.ip_address("fd00:ec2::254"),
-}
-
-# Extra explicit denylist alongside the RFC checks below for clarity.
-_DENY_NETWORKS = [
-    ipaddress.ip_network("100.64.0.0/10"),  # CGNAT
-]
-
-
-class UrlRejectedError(ValueError):
-    """Raised when a URL fails the allowlist or resolves to a forbidden IP."""
-
-
-class UrlFetchError(RuntimeError):
-    """Raised when a fetch exceeds size/time caps or returns wrong content type."""
-
 
 @dataclass
 class UrlTokens:
@@ -92,52 +87,26 @@ class UrlRenderer:
         self,
         *,
         dns_resolver: Optional[Callable[[str], List[str]]] = None,
-        session: Optional[requests.Session] = None,
     ) -> None:
-        self._dns_resolver = dns_resolver or _default_resolver
-        self._session = session or requests.Session()
-        self._session.headers.update({"User-Agent": _USER_AGENT})
+        self._dns_resolver = dns_resolver or default_resolver
 
     # ---- validation ----------------------------------------------------
 
-    def validate(self, url: str) -> List[str]:
-        """Validate scheme, resolve hostname, reject disallowed IPs. Return resolved IPs."""
-        if not isinstance(url, str) or len(url) > 2048:
-            raise UrlRejectedError("URL must be a string up to 2048 characters.")
+    def validate(self, url: str) -> PinnedTarget:
+        """Validate scheme, resolve hostname, reject disallowed IPs.
 
-        parsed = urlparse(url)
-        if parsed.scheme != "https":
-            raise UrlRejectedError("Only https:// URLs are allowed.")
-        if not parsed.hostname:
-            raise UrlRejectedError("URL must include a hostname.")
-
-        host = parsed.hostname
-        resolved = self._dns_resolver(host)
-        if not resolved:
-            raise UrlRejectedError(f"Could not resolve host: {host}")
-
-        for addr in resolved:
-            ip = _parse_ip(addr)
-            if ip is None:
-                # If the resolver returned the hostname itself (test-stubbed),
-                # try parsing a bracketed IPv6 from the URL as a fallback.
-                ip = _parse_ip(host)
-            if ip is None:
-                raise UrlRejectedError(f"Unresolvable address: {addr}")
-            if _is_forbidden(ip):
-                raise UrlRejectedError(
-                    f"Host {host} resolves to a forbidden address range."
-                )
-        return resolved
+        Returns the target pinned to the validated IP. Raises UrlRejectedError.
+        """
+        return validate_url(url, resolver=self._dns_resolver, allowed_schemes=("https",))
 
     # ---- fetchers ------------------------------------------------------
 
     def fetch_html(self, url: str) -> Tuple[str, List[str], str]:
         """
         Fetch HTML. Returns (body, linked_stylesheet_urls, final_url).
-        Raises UrlRejectedError / UrlFetchError.
+        Raises UrlRejectedError / UrlFetchError. Validation happens inside
+        _bounded_get (once per hop) so there is no separate check-then-fetch.
         """
-        self.validate(url)
         body, final_url = self._bounded_get(
             url,
             allowed_mime_startswith=_ALLOWED_HTML_MIME_STARTSWITH,
@@ -157,10 +126,6 @@ class UrlRenderer:
         for css_url in css_urls:
             if aggregate >= MAX_CSS_BYTES_AGGREGATE:
                 break
-            try:
-                self.validate(css_url)
-            except UrlRejectedError:
-                continue
             remaining = MAX_CSS_BYTES_AGGREGATE - aggregate
             cap = min(MAX_CSS_BYTES_PER_FILE, remaining)
             try:
@@ -169,7 +134,7 @@ class UrlRenderer:
                     allowed_mime_startswith=("text/css",),
                     max_bytes=cap,
                 )
-            except UrlFetchError:
+            except (UrlFetchError, UrlRejectedError):
                 continue
             aggregate += len(body)
             out.append(body.decode("utf-8", errors="replace"))
@@ -196,17 +161,13 @@ class UrlRenderer:
         candidates = _extract_image_candidates(html, base_url)
         for img_url in candidates:
             try:
-                self.validate(img_url)
-            except UrlRejectedError:
-                continue
-            try:
                 body, _ = self._bounded_get(
                     img_url,
                     allowed_mime_startswith=allowed_raster,
                     max_bytes=MAX_IMAGE_BYTES,
                 )
                 return body
-            except UrlFetchError:
+            except (UrlFetchError, UrlRejectedError):
                 continue
         return None
 
@@ -220,50 +181,23 @@ class UrlRenderer:
         max_bytes: int,
     ) -> Tuple[bytes, str]:
         """
-        GET a URL with strict caps. Follows up to MAX_REDIRECTS redirects,
-        re-validating every hop.
+        GET a URL with strict caps via the shared SSRF-safe fetcher: every hop
+        (including up to MAX_REDIRECTS redirects) is re-validated and the
+        connection is pinned to the validated IP with TLS verification on.
         """
-        current = url
-        for hop in range(MAX_REDIRECTS + 1):
-            resp = self._session.get(
-                current,
-                stream=True,
-                timeout=(CONNECT_TIMEOUT_SEC, READ_TIMEOUT_SEC),
-                allow_redirects=False,
-            )
-
-            if 300 <= resp.status_code < 400:
-                loc = resp.headers.get("Location")
-                resp.close()
-                if hop == MAX_REDIRECTS:
-                    raise UrlFetchError("Exceeded redirect cap.")
-                if not loc:
-                    raise UrlFetchError("Redirect without Location header.")
-                current = urljoin(current, loc)
-                self.validate(current)
-                continue
-
-            if resp.status_code >= 400:
-                resp.close()
-                raise UrlFetchError(f"HTTP {resp.status_code} for {current}")
-
-            ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-            if not any(ctype.startswith(p) for p in allowed_mime_startswith):
-                resp.close()
-                raise UrlFetchError(f"Disallowed Content-Type: {ctype!r}")
-
-            body = bytearray()
-            for chunk in resp.iter_content(chunk_size=8192):
-                if not chunk:
-                    continue
-                body.extend(chunk)
-                if len(body) > max_bytes:
-                    resp.close()
-                    raise UrlFetchError(f"Body exceeds {max_bytes} bytes.")
-            resp.close()
-            return bytes(body), current
-
-        raise UrlFetchError("Exceeded redirect cap.")
+        result = safe_get(
+            url,
+            resolver=self._dns_resolver,
+            allowed_schemes=("https",),
+            allowed_mime_startswith=allowed_mime_startswith,
+            max_bytes=max_bytes,
+            max_redirects=MAX_REDIRECTS,
+            connect_timeout=CONNECT_TIMEOUT_SEC,
+            read_timeout=READ_TIMEOUT_SEC,
+            total_budget=TOTAL_BUDGET_SEC,
+            headers={"User-Agent": _USER_AGENT},
+        )
+        return result.body, result.final_url
 
 
 # ---- CSS token extraction -----------------------------------------------
@@ -388,37 +322,3 @@ def _extract_image_candidates(html: str, base_url: str) -> List[str]:
     # Always probe /favicon.ico as a last resort.
     out.append(urljoin(base_url, "/favicon.ico"))
     return _dedupe(out)
-
-
-# ---- DNS + IP validation -----------------------------------------------
-
-
-def _default_resolver(host: str) -> List[str]:
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
-        return []
-    return _dedupe([info[4][0] for info in infos])
-
-
-def _parse_ip(addr: str):
-    try:
-        return ipaddress.ip_address(addr)
-    except ValueError:
-        return None
-
-
-def _is_forbidden(ip) -> bool:
-    # Explicit metadata addresses.
-    if ip in _METADATA_ADDRS:
-        return True
-    # RFC-defined private/loopback/link-local/multicast + IPv6 private scopes.
-    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast:
-        return True
-    if ip.is_reserved or ip.is_unspecified:
-        return True
-    # CGNAT (not covered by is_private in Python's ipaddress).
-    for net in _DENY_NETWORKS:
-        if ip in net:
-            return True
-    return False

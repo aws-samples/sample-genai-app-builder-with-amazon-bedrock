@@ -1,7 +1,7 @@
 import { WORK_DIR_NAME } from '~/utils/constants';
 import { createScopedLogger } from '~/utils/logger';
-import { RuntimeConnectionImpl } from './connection';
-import { setSessionStatus } from './session-status';
+import { RuntimeConnectionImpl, redactWsUrl } from './connection';
+import { sessionStatus, setSessionStatus } from './session-status';
 import type { RuntimeConfig, RuntimeConnection } from './types';
 import { forgetInviteToken, resolveInviteToken } from './invite-survival';
 import { forgetJoinedSession, rememberJoinedSession, resolveJoinedSession } from './joined-session';
@@ -43,9 +43,13 @@ export async function bootContainerRuntime(): Promise<RuntimeConnection> {
       requestTimeout: 120000,
       pingInterval: 30000,
       refreshEndpoint: refreshWsEndpoint,
+      // A refused session is over; say so rather than reconnecting forever.
+      maxRefusedRetries: 3,
+      onSessionRefused: abandonRefusedSession,
     };
 
-    logger.debug('Booting container runtime...', { wsEndpoint });
+    // Never log the endpoint itself: its query string is the signed-URL credential.
+    logger.debug('Booting container runtime...', { wsEndpoint: redactWsUrl(wsEndpoint) });
 
     const connection = new RuntimeConnectionImpl(config);
     await connection.connect();
@@ -57,10 +61,13 @@ export async function bootContainerRuntime(): Promise<RuntimeConnection> {
     // replays its files. The files store flips this to `ready` on first sync.
     setSessionStatus('syncing');
 
-    await bindContainer(connection);
-
     return connection;
   } catch (err) {
+    // abandonRefusedSession has already reported a refused session more precisely.
+    if (sessionStatus.get() === 'failed') {
+      throw err;
+    }
+
     setSessionStatus(
       'failed',
       (window as any)?.__SANDBOX_JOINED_SESSION__
@@ -72,37 +79,31 @@ export async function bootContainerRuntime(): Promise<RuntimeConnection> {
 }
 
 /**
- * Tell the backend which container answered, so collaborators are routed to the
- * same one.
+ * Give up on a session whose container has refused it for good.
  *
- * Claiming a sandbox only reserves a task in the session record — the container
- * itself is never told — so until a connection lands, the recorded address is a
- * guess. The sidecar reports its own hostname on connect; passing that back makes
- * the container the authority and lets the routing layer pin every later
- * collaborator to it.
- *
- * Only the owner can bind, and a failure is non-fatal: solo editing already works
- * over the shared route, so this must never block the runtime from coming up.
+ * A container serves one session for its lifetime and is retired, never
+ * reassigned, when that session ends, so a persistent refusal means this
+ * session's sandbox is gone. Forgetting it is what lets the next boot create a
+ * fresh session: while a session id is held, boot only ever re-signs it.
  */
-async function bindContainer(connection: RuntimeConnection): Promise<void> {
-  const { sessionId, containerId } = connection.getSession();
+export function abandonRefusedSession(): void {
+  const joined = typeof window !== 'undefined' && Boolean((window as any).__SANDBOX_JOINED_SESSION__);
 
-  if (!sessionId || !containerId || typeof window === 'undefined') {
-    return;
+  if (typeof window !== 'undefined') {
+    delete (window as any).__SANDBOX_SESSION_ID__;
+    delete (window as any).__SANDBOX_WS_ENDPOINT__;
   }
 
-  // A joiner is not the owner and would be refused; the owner has already pinned.
-  if ((window as any).__SANDBOX_JOINED_SESSION__) {
-    return;
+  if (joined) {
+    forgetJoinedSession();
   }
 
-  try {
-    const { getSessionClient } = await import('~/lib/api/session-client');
-    await getSessionClient().bindContainer(sessionId, containerId);
-    logger.debug('Container bound for collaboration', { containerId });
-  } catch (err) {
-    logger.warn('Could not bind container — collaborators may not reach it:', err);
-  }
+  setSessionStatus(
+    'failed',
+    joined
+      ? 'The shared session has ended. Reload to start a sandbox of your own.'
+      : 'This sandbox session has ended. Reload to start a new one.',
+  );
 }
 
 /**
@@ -300,6 +301,7 @@ async function resolveWsEndpoint(): Promise<string> {
       if (wsUrl) {
         (window as any).__SANDBOX_WS_ENDPOINT__ = wsUrl;
         (window as any).__SANDBOX_SESSION_ID__ = joinedSessionId;
+        (window as any).__SANDBOX_PREVIEW_URL__ = status.previewUrl;
         // Still a guest, not the owner: this must keep suppressing the owner-only
         // container bind and keep the client going live automatically.
         (window as any).__SANDBOX_JOINED_SESSION__ = true;
@@ -349,6 +351,7 @@ async function resolveWsEndpoint(): Promise<string> {
         // Store for reconnection and other consumers
         (window as any).__SANDBOX_WS_ENDPOINT__ = session.wsUrl;
         (window as any).__SANDBOX_PREVIEW_DOMAIN__ = session.previewDomain;
+        (window as any).__SANDBOX_PREVIEW_URL__ = session.previewUrl;
         (window as any).__SANDBOX_SESSION_ID__ = session.sessionId;
 
         // Flag the joined case so a collaborator's client can go live
