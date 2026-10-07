@@ -30,14 +30,35 @@ function getContentType(filename: string): string {
   return MIME_TYPES[ext] || 'application/octet-stream';
 }
 
-export async function generateUploadUrls(shareId: string, files: string[]): Promise<{ file: string; url: string }[]> {
+/**
+ * The client collects the built site from the sandbox's `dist/` folder, so the
+ * file paths arrive prefixed with `dist/`. The share is served from the share
+ * root (`/shared/{id}/`), so that prefix has to be dropped when forming the S3
+ * key — otherwise index.html lands at `shared/{id}/dist/index.html` and the
+ * published link 403s. Any other single leading build-output folder is handled
+ * the same way so the served tree always starts at the share root.
+ */
+function toSiteKey(shareId: string, file: string): string {
+  const normalized = file.replace(/^\/+/, '').replace(/^(dist|build|out)\//, '');
+  return `shared/${shareId}/${normalized}`;
+}
+
+export async function generateUploadUrls(
+  shareId: string,
+  files: string[],
+): Promise<{ file: string; url: string; contentType: string }[]> {
   const urls = await Promise.all(
     files.map(async (file) => {
-      const key = `shared/${shareId}/${file}`;
+      const key = toSiteKey(shareId, file);
       const contentType = getContentType(file);
       const command = new PutObjectCommand({ Bucket: BUCKET, Key: key, ContentType: contentType });
       const url = await getSignedUrl(s3, command, { expiresIn: 600 });
-      return { file, url };
+
+      // The client must send this same Content-Type on its PUT. A browser fetch
+      // with a Uint8Array body sends none, and S3 then stores the object as
+      // binary/octet-stream — which makes the shared page download instead of
+      // render.
+      return { file, url, contentType };
     }),
   );
   return urls;

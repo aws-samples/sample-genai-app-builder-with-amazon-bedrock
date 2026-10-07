@@ -15,7 +15,7 @@ export class SandboxSecurity extends Construct {
 
     const { stackPrefix, vpc } = props;
 
-    // ALB Security Group: Allow inbound 443 (from CloudFront / internet for now)
+    // ALB Security Group: inbound from CloudFront only
     this.albSg = new ec2.SecurityGroup(this, 'AlbSg', {
       vpc,
       securityGroupName: `${stackPrefix}-sandbox-alb-sg`,
@@ -23,20 +23,24 @@ export class SandboxSecurity extends Construct {
       allowAllOutbound: false,
     });
 
-    // Allow inbound from anywhere on ALB ports.
-    // NOTE: Prefix list pl-82a045eb (CloudFront IPs) exceeds the default SG
-    // rules limit (~60). A WAF web ACL or custom origin header is the proper
-    // way to restrict ALB access to CloudFront in a future iteration.
-    this.albSg.addIngressRule(
-      ec2.Peer.anyIpv4(),
-      ec2.Port.tcp(443),
-      'Allow HTTPS from CloudFront',
-    );
+    // Inbound only from CloudFront's origin-facing addresses, via the AWS-managed
+    // prefix list. CloudFront is the only intended way in: it enforces the signed
+    // URLs that authorise sandbox WebSocket upgrades, so a load balancer reachable
+    // from anywhere would let a caller skip that check entirely. Requests from
+    // other CloudFront distributions are refused by the origin-verify header that
+    // every forwarding rule requires (see sandbox-alb.ts).
+    //
+    // A single rule, because the prefix list counts as its maximum entry count
+    // against the security group's rules quota. Port 80 is not opened: CloudFront
+    // reaches the ALB on 443 only.
+    const cloudFrontOriginFacing = ec2.PrefixList.fromLookup(this, 'CloudFrontOriginFacing', {
+      prefixListName: 'com.amazonaws.global.cloudfront.origin-facing',
+    });
 
     this.albSg.addIngressRule(
-      ec2.Peer.anyIpv4(),
-      ec2.Port.tcp(80),
-      'Allow HTTP for redirect to HTTPS',
+      ec2.Peer.prefixList(cloudFrontOriginFacing.prefixListId),
+      ec2.Port.tcp(443),
+      'Allow HTTP on 443 from CloudFront only',
     );
 
     // ALB needs outbound to containers

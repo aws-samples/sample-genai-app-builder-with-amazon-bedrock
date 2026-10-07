@@ -17,12 +17,12 @@ export function AttachmentChip({ attachment, onRemove, readOnly = false }: Attac
       className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm transition-theme ${
         isError
           ? 'bg-red-500/10 border border-red-500/30'
-          : 'bg-bolt-elements-background-depth-3 border border-bolt-elements-borderColor'
+          : 'bg-vibe-elements-background-depth-3 border border-vibe-elements-borderColor'
       }`}
       title={isError ? attachment.error : attachment.name}
     >
       {isProcessing ? (
-        <div className="i-svg-spinners:90-ring-with-bg text-bolt-elements-loader-progress text-base flex-shrink-0" />
+        <div className="i-svg-spinners:90-ring-with-bg text-vibe-elements-loader-progress text-base flex-shrink-0" />
       ) : isImage && attachment.base64Data ? (
         <img
           src={`data:${attachment.base64MediaType};base64,${attachment.base64Data}`}
@@ -38,16 +38,16 @@ export function AttachmentChip({ attachment, onRemove, readOnly = false }: Attac
                 ? 'i-ph:file-pdf text-red-400'
                 : attachment.mimeType.includes('wordprocessingml')
                   ? 'i-ph:file-doc text-blue-400'
-                  : 'i-ph:file-text text-bolt-elements-textSecondary'
+                  : 'i-ph:file-text text-vibe-elements-textSecondary'
           }`}
         />
       )}
 
       <div className="flex flex-col min-w-0">
-        <span className="text-bolt-elements-textPrimary truncate max-w-[150px] text-xs">
+        <span className="text-vibe-elements-textPrimary truncate max-w-[150px] text-xs">
           {attachment.name}
         </span>
-        <span className="text-bolt-elements-textTertiary text-[10px]">
+        <span className="text-vibe-elements-textTertiary text-[10px]">
           {formatFileSize(attachment.size)}
         </span>
       </div>
@@ -55,7 +55,7 @@ export function AttachmentChip({ attachment, onRemove, readOnly = false }: Attac
       {!readOnly && onRemove && (
         <button
           onClick={() => onRemove(attachment.id)}
-          className="flex-shrink-0 text-bolt-elements-textTertiary hover:text-bolt-elements-textPrimary transition-theme p-0.5"
+          className="flex-shrink-0 text-vibe-elements-textTertiary hover:text-vibe-elements-textPrimary transition-theme p-0.5"
           aria-label={`Remove ${attachment.name}`}
         >
           <div className="i-ph:x text-sm" />

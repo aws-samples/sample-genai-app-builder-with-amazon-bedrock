@@ -37,6 +37,7 @@ process.env.SHARED_SITES_DOMAIN = 'https://vibe.proserve.aws.dev';
 
 // Import after mocks are set up
 import { handler } from '../../lib/shared-sites/share-lambda/index';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
 
 function makeEvent(method: string, path: string, body?: Record<string, unknown>, userId = 'test-user'): APIGatewayProxyEvent {
   return {
@@ -77,10 +78,50 @@ describe('Share Lambda', () => {
     expect(body.fileMap).toHaveLength(3);
   });
 
+  test('POST /share fileMap tells the client what Content-Type to upload with', async () => {
+    // The presigned URL alone is not enough: a browser PUT with a Uint8Array
+    // body sends no Content-Type header, so S3 stores binary/octet-stream and
+    // the shared page downloads instead of rendering. The client must echo the
+    // type the Lambda signed, so it has to be in the response.
+    const event = makeEvent('POST', '/share', {
+      title: 'My Website',
+      files: ['index.html', 'assets/main.js', 'assets/style.css'],
+    });
+
+    const result = await handler(event);
+    const body = JSON.parse(result.body);
+
+    expect(body.fileMap.map((f: { file: string; contentType: string }) => f.contentType)).toEqual([
+      'text/html',
+      'application/javascript',
+      'text/css',
+    ]);
+  });
+
   test('POST /share rejects missing files', async () => {
     const event = makeEvent('POST', '/share', { title: 'test' });
     const result = await handler(event);
     expect(result.statusCode).toBe(400);
+  });
+
+  test('strips the dist/ build prefix so the site serves from the share root', async () => {
+    const event = makeEvent('POST', '/share', {
+      title: 'My Website',
+      files: ['dist/index.html', 'dist/assets/main.js'],
+    });
+
+    await handler(event);
+
+    // the S3 key must not carry the dist/ prefix, or the published link 403s;
+    // the client-facing fileMap still uses the original path for upload matching
+    const keys = (PutObjectCommand as unknown as jest.Mock).mock.calls.map((c) => c[0].Key);
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/\/index\.html$/),
+        expect.stringMatching(/\/assets\/main\.js$/),
+      ]),
+    );
+    expect(keys.some((k: string) => k.includes('/dist/'))).toBe(false);
   });
 
   test('POST /share with action=confirm writes DynamoDB and returns URL', async () => {

@@ -104,9 +104,9 @@ export function AttachedTemplateChip({ skillId, onClear }: AttachedTemplateChipP
 
   return (
     <div className="flex max-w-full flex-col items-start gap-1">
-      <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-bolt-elements-borderColor bg-bolt-elements-background-depth-3 px-2.5 py-1 text-xs text-bolt-elements-textPrimary">
+      <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-vibe-elements-borderColor bg-vibe-elements-background-depth-3 px-2.5 py-1 text-xs text-vibe-elements-textPrimary">
         {swatchColors.length > 0 && (
-          <div className="flex h-3 w-10 shrink-0 overflow-hidden rounded-full border border-bolt-elements-borderColor">
+          <div className="flex h-3 w-10 shrink-0 overflow-hidden rounded-full border border-vibe-elements-borderColor">
             {swatchColors.map((hex, idx) => (
               <div
                 key={`${hex}-${idx}`}
@@ -120,17 +120,17 @@ export function AttachedTemplateChip({ skillId, onClear }: AttachedTemplateChipP
           type="button"
           onClick={() => setExpanded((e) => !e)}
           aria-expanded={expanded}
-          className="inline-flex min-w-0 items-center gap-1.5 text-left transition-colors hover:text-bolt-elements-textPrimary"
+          className="inline-flex min-w-0 items-center gap-1.5 text-left transition-colors hover:text-vibe-elements-textPrimary"
           title={expanded ? 'Hide skill details' : 'Show skill details'}
         >
           <span className="min-w-0 truncate">{summary.name}</span>
           {summary.styleDescriptorLabel && (
-            <span className="shrink-0 text-bolt-elements-textTertiary">
+            <span className="shrink-0 text-vibe-elements-textTertiary">
               · {summary.styleDescriptorLabel}
             </span>
           )}
           <div
-            className={`i-ph:caret-down shrink-0 text-xs text-bolt-elements-textTertiary transition-transform ${
+            className={`i-ph:caret-down shrink-0 text-xs text-vibe-elements-textTertiary transition-transform ${
               expanded ? 'rotate-180' : ''
             }`}
           />
@@ -173,7 +173,7 @@ function SkillDisclosurePanel({
 
   if (!skill) {
     return (
-      <div className="w-full max-w-md rounded-md border border-bolt-elements-borderColor bg-bolt-elements-background-depth-2 p-3 text-xs text-bolt-elements-textSecondary">
+      <div className="w-full max-w-md rounded-md border border-vibe-elements-borderColor bg-vibe-elements-background-depth-2 p-3 text-xs text-vibe-elements-textSecondary">
         Loading skill details…
       </div>
     );
@@ -202,10 +202,10 @@ function SkillDisclosurePanel({
   const forbidden = skill.copyVoice.forbidden;
 
   return (
-    <div className="w-full max-w-md rounded-md border border-bolt-elements-borderColor bg-bolt-elements-background-depth-2 p-3 text-xs">
+    <div className="w-full max-w-md rounded-md border border-vibe-elements-borderColor bg-vibe-elements-background-depth-2 p-3 text-xs">
       <dl className="flex flex-col gap-2.5">
         <div>
-          <dt className="mb-1 text-[10px] uppercase tracking-wide text-bolt-elements-textTertiary">
+          <dt className="mb-1 text-[10px] uppercase tracking-wide text-vibe-elements-textTertiary">
             Palette
           </dt>
           <dd>
@@ -213,12 +213,12 @@ function SkillDisclosurePanel({
               {paletteEntries.map((e) => (
                 <li key={e.label} className="flex items-center gap-1.5">
                   <span
-                    className="h-4 w-4 shrink-0 rounded border border-bolt-elements-borderColor"
+                    className="h-4 w-4 shrink-0 rounded border border-vibe-elements-borderColor"
                     style={{ backgroundColor: e.hex }}
                     title={e.hex}
                   />
-                  <span className="text-bolt-elements-textSecondary">{e.label}</span>
-                  <code className="text-bolt-elements-textTertiary">{e.hex}</code>
+                  <span className="text-vibe-elements-textSecondary">{e.label}</span>
+                  <code className="text-vibe-elements-textTertiary">{e.hex}</code>
                 </li>
               ))}
             </ul>
@@ -227,10 +227,10 @@ function SkillDisclosurePanel({
 
         {fontFamilies.length > 0 && (
           <div>
-            <dt className="mb-1 text-[10px] uppercase tracking-wide text-bolt-elements-textTertiary">
+            <dt className="mb-1 text-[10px] uppercase tracking-wide text-vibe-elements-textTertiary">
               Typography
             </dt>
-            <dd className="text-bolt-elements-textSecondary">
+            <dd className="text-vibe-elements-textSecondary">
               {fontFamilies.join(' · ')}
             </dd>
           </div>
@@ -238,7 +238,7 @@ function SkillDisclosurePanel({
 
         {intents.length > 0 && (
           <div>
-            <dt className="mb-1 text-[10px] uppercase tracking-wide text-bolt-elements-textTertiary">
+            <dt className="mb-1 text-[10px] uppercase tracking-wide text-vibe-elements-textTertiary">
               UI intent
             </dt>
             <dd>
@@ -246,9 +246,9 @@ function SkillDisclosurePanel({
                 {intents.map(([label, value]) => (
                   <li
                     key={label}
-                    className="rounded bg-bolt-elements-background-depth-3 px-2 py-0.5 text-bolt-elements-textPrimary"
+                    className="rounded bg-vibe-elements-background-depth-3 px-2 py-0.5 text-vibe-elements-textPrimary"
                   >
-                    <span className="text-bolt-elements-textTertiary">{label}:</span>{' '}
+                    <span className="text-vibe-elements-textTertiary">{label}:</span>{' '}
                     {value}
                   </li>
                 ))}
@@ -259,20 +259,20 @@ function SkillDisclosurePanel({
 
         {forbidden.length > 0 && (
           <div>
-            <dt className="mb-1 text-[10px] uppercase tracking-wide text-bolt-elements-textTertiary">
+            <dt className="mb-1 text-[10px] uppercase tracking-wide text-vibe-elements-textTertiary">
               Forbidden copy
             </dt>
-            <dd className="text-bolt-elements-textSecondary">
+            <dd className="text-vibe-elements-textSecondary">
               {forbidden.join(', ')}
             </dd>
           </div>
         )}
       </dl>
 
-      <div className="mt-3 border-t border-bolt-elements-borderColor pt-2">
+      <div className="mt-3 border-t border-vibe-elements-borderColor pt-2">
         <Link
           to={`/brand-templates/${skillId}`}
-          className="inline-flex items-center gap-1 text-bolt-elements-textSecondary hover:text-bolt-elements-textPrimary"
+          className="inline-flex items-center gap-1 text-vibe-elements-textSecondary hover:text-vibe-elements-textPrimary"
         >
           <div className="i-ph:arrow-square-out text-sm" />
           Open full spec
@@ -293,7 +293,7 @@ function ClearButton({
   const toneClasses =
     tone === 'warning'
       ? 'text-yellow-400 hover:bg-yellow-500/20'
-      : 'text-bolt-elements-textTertiary hover:bg-bolt-elements-background-depth-2 hover:text-bolt-elements-textPrimary';
+      : 'text-vibe-elements-textTertiary hover:bg-vibe-elements-background-depth-2 hover:text-vibe-elements-textPrimary';
 
   return (
     <button

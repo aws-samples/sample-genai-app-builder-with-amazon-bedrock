@@ -12,10 +12,10 @@ export function TemplateGallery({ skills, onCreate, onDelete }: TemplateGalleryP
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 py-10">
       <header className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-bolt-elements-textPrimary">
+          <h1 className="text-2xl font-semibold text-vibe-elements-textPrimary">
             Brand templates
           </h1>
-          <p className="mt-1 max-w-xl text-sm text-bolt-elements-textSecondary">
+          <p className="mt-1 max-w-xl text-sm text-vibe-elements-textSecondary">
             Your library of design systems. Attach one to any chat so the app you
             generate honors the register, color strategy, typography, and motion
             habits captured here — not the category-reflex defaults the model
@@ -25,7 +25,7 @@ export function TemplateGallery({ skills, onCreate, onDelete }: TemplateGalleryP
         <button
           type="button"
           onClick={onCreate}
-          className="inline-flex items-center gap-2 self-start rounded-md bg-bolt-elements-button-primary-background px-3 py-2 text-sm font-medium text-bolt-elements-button-primary-text transition-colors hover:bg-bolt-elements-button-primary-backgroundHover"
+          className="inline-flex items-center gap-2 self-start rounded-md bg-vibe-elements-button-primary-background px-3 py-2 text-sm font-medium text-vibe-elements-button-primary-text transition-colors hover:bg-vibe-elements-button-primary-backgroundHover"
         >
           <div className="i-ph:plus text-base" />
           New template
@@ -47,19 +47,19 @@ export function TemplateGallery({ skills, onCreate, onDelete }: TemplateGalleryP
 
 function EmptyState({ onCreate }: { onCreate: () => void }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-bolt-elements-borderColor bg-bolt-elements-background-depth-2 px-6 py-16 text-center">
-      <div className="i-ph:paint-brush-broad text-3xl text-bolt-elements-textTertiary" />
-      <h2 className="text-base font-medium text-bolt-elements-textPrimary">
+    <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-vibe-elements-borderColor bg-vibe-elements-background-depth-2 px-6 py-16 text-center">
+      <div className="i-ph:paint-brush-broad text-3xl text-vibe-elements-textTertiary" />
+      <h2 className="text-base font-medium text-vibe-elements-textPrimary">
         No brand templates yet
       </h2>
-      <p className="max-w-sm text-sm text-bolt-elements-textSecondary">
+      <p className="max-w-sm text-sm text-vibe-elements-textSecondary">
         Upload inspiration images or paste a public website URL to extract a
         structured brand template you can reuse across chats.
       </p>
       <button
         type="button"
         onClick={onCreate}
-        className="mt-2 inline-flex items-center gap-2 rounded-md bg-bolt-elements-button-primary-background px-3 py-2 text-sm font-medium text-bolt-elements-button-primary-text hover:bg-bolt-elements-button-primary-backgroundHover"
+        className="mt-2 inline-flex items-center gap-2 rounded-md bg-vibe-elements-button-primary-background px-3 py-2 text-sm font-medium text-vibe-elements-button-primary-text hover:bg-vibe-elements-button-primary-backgroundHover"
       >
         Create your first template
       </button>

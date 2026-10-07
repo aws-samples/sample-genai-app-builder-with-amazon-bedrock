@@ -14,19 +14,19 @@ export const TemplateToggle = memo(() => {
     <div className="flex items-center gap-2">
       <div className="flex items-center">
         <div className="relative group mr-2">
-          <div className="w-4 h-4 rounded-full border border-bolt-elements-textSecondary flex items-center justify-center cursor-help text-bolt-elements-textSecondary hover:text-bolt-elements-textPrimary hover:border-bolt-elements-textPrimary">
+          <div className="w-4 h-4 rounded-full border border-vibe-elements-textSecondary flex items-center justify-center cursor-help text-vibe-elements-textSecondary hover:text-vibe-elements-textPrimary hover:border-vibe-elements-textPrimary">
             ?
           </div>
-          <div className="absolute left-1/2 top-full mt-2 w-64 p-2 bg-bolt-elements-backgroundDefault border border-bolt-elements-borderColor rounded-md shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-10 text-xs text-bolt-elements-textSecondary transform -translate-x-1/2">
+          <div className="absolute left-1/2 top-full mt-2 w-64 p-2 bg-vibe-elements-backgroundDefault border border-vibe-elements-borderColor rounded-md shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-10 text-xs text-vibe-elements-textSecondary transform -translate-x-1/2">
             This is recommended to ensure the project can be deployed using the react-starter-pack CDK stack.
           </div>
         </div>
-        <span className="text-sm text-bolt-elements-textSecondary">Enable GenAIIC Template</span>
+        <span className="text-sm text-vibe-elements-textSecondary">Enable AWS FDE Template</span>
       </div>
       <button
         onClick={handleToggle}
         className={classNames(
-          'relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-bolt-elements-focus focus:ring-offset-2',
+          'relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-vibe-elements-focus focus:ring-offset-2',
           {
             'bg-green-500': enableTemplate,
             'bg-red-500': !enableTemplate,

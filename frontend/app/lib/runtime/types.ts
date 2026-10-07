@@ -86,7 +86,12 @@ export interface FileSyncResponse extends WSResponse {
   payload: {
     files: Array<{
       path: string;
-      type: 'file' | 'folder';
+      /**
+       * The sidecar sends 'directory' for directories (`FsSyncFile` in the agent
+       * protocol). 'folder' is this codebase's internal wording and is accepted
+       * too, so consumers must handle both.
+       */
+      type: 'file' | 'directory' | 'folder';
       content?: string;
       isBinary?: boolean;
       size?: number;
@@ -280,8 +285,25 @@ export type WSMessageHandler = (message: WSMessage) => void;
 
 export interface RuntimeConnection {
   request<T extends WSResponse = WSResponse>(
-    req: Omit<WSRequest, 'id' | 'timestamp'>
+    req: Omit<WSRequest, 'id' | 'timestamp'>,
+    timeoutMs?: number,
   ): Promise<T>;
+  /**
+   * Send a message without awaiting a response. Used for relay-style traffic
+   * (e.g. the `yjs:*` collaboration frames) where the server fans the message
+   * out to peers and never replies to the sender. No-op if not connected.
+   */
+  send(req: Omit<WSRequest, 'id' | 'timestamp'>): void;
+
+  /**
+   * Resolve once the connection is open and the runtime has reported ready.
+   *
+   * `request()` uses this internally so a transient reconnect never surfaces as
+   * a failure; callers only need it when they want to gate non-request work on
+   * the connection being usable. Rejects when the connection is permanently
+   * dead (closed by the client, or out of reconnect attempts).
+   */
+  whenReady(timeoutMs?: number): Promise<void>;
   on(eventType: string, handler: WSMessageHandler): void;
   off(eventType: string, handler: WSMessageHandler): void;
   isConnected(): boolean;
@@ -291,12 +313,29 @@ export interface RuntimeConnection {
 
 export interface RuntimeConfig {
   wsEndpoint: string;
-  authToken?: string;
   reconnect?: boolean;
   reconnectInterval?: number;
   maxReconnectAttempts?: number;
   requestTimeout?: number;
   pingInterval?: number;
+  /**
+   * How long a keepalive ping may go unanswered before it counts as failed.
+   *
+   * Deliberately separate from `requestTimeout`: the ping is a liveness probe,
+   * and a probe that takes two minutes to fail cannot detect a dead socket in
+   * time to be useful. Must stay well under `pingInterval` so probes do not
+   * overlap.
+   */
+  pingTimeout?: number;
+  /**
+   * Fetch a fresh endpoint URL before reconnecting.
+   *
+   * The endpoint carries a short-lived signed URL that authorises the
+   * upgrade. Reconnect backoff can outlast that signed URL, so without a way to
+   * re-request one, a long outage would leave the client permanently unable to
+   * reconnect. Returning undefined keeps the existing endpoint.
+   */
+  refreshEndpoint?: () => Promise<string | undefined>;
 }
 
 export enum RuntimeErrorCode {

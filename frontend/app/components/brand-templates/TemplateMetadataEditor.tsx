@@ -54,14 +54,14 @@ export function TemplateMetadataEditor({ skill, onUpdated }: TemplateMetadataEdi
   }
 
   return (
-    <section className="flex flex-col gap-3 rounded-lg border border-bolt-elements-borderColor bg-bolt-elements-background-depth-2 p-4">
+    <section className="flex flex-col gap-3 rounded-lg border border-vibe-elements-borderColor bg-vibe-elements-background-depth-2 p-4">
       <EditField label="Name">
         <input
           type="text"
           value={name}
           onChange={(e) => setName(e.target.value)}
           maxLength={80}
-          className="w-full rounded border border-bolt-elements-borderColor bg-bolt-elements-background-depth-1 px-3 py-1.5 text-sm text-bolt-elements-textPrimary transition-colors focus:border-bolt-elements-focus focus:outline-none"
+          className="w-full rounded border border-vibe-elements-borderColor bg-vibe-elements-background-depth-1 px-3 py-1.5 text-sm text-vibe-elements-textPrimary transition-colors focus:border-vibe-elements-focus focus:outline-none"
         />
       </EditField>
 
@@ -71,7 +71,7 @@ export function TemplateMetadataEditor({ skill, onUpdated }: TemplateMetadataEdi
           onChange={(e) => setDescription(e.target.value)}
           maxLength={500}
           rows={2}
-          className="w-full resize-none rounded border border-bolt-elements-borderColor bg-bolt-elements-background-depth-1 px-3 py-1.5 text-sm text-bolt-elements-textPrimary transition-colors focus:border-bolt-elements-focus focus:outline-none"
+          className="w-full resize-none rounded border border-vibe-elements-borderColor bg-vibe-elements-background-depth-1 px-3 py-1.5 text-sm text-vibe-elements-textPrimary transition-colors focus:border-vibe-elements-focus focus:outline-none"
         />
       </EditField>
 
@@ -81,7 +81,7 @@ export function TemplateMetadataEditor({ skill, onUpdated }: TemplateMetadataEdi
           value={tagsText}
           onChange={(e) => setTagsText(e.target.value)}
           placeholder="editorial, blue, minimal"
-          className="w-full rounded border border-bolt-elements-borderColor bg-bolt-elements-background-depth-1 px-3 py-1.5 text-sm text-bolt-elements-textPrimary placeholder:text-bolt-elements-textTertiary transition-colors focus:border-bolt-elements-focus focus:outline-none"
+          className="w-full rounded border border-vibe-elements-borderColor bg-vibe-elements-background-depth-1 px-3 py-1.5 text-sm text-vibe-elements-textPrimary placeholder:text-vibe-elements-textTertiary transition-colors focus:border-vibe-elements-focus focus:outline-none"
         />
       </EditField>
 
@@ -89,7 +89,7 @@ export function TemplateMetadataEditor({ skill, onUpdated }: TemplateMetadataEdi
         {error ? (
           <p className="text-xs text-red-400">{error}</p>
         ) : (
-          <span className="text-xs text-bolt-elements-textTertiary">
+          <span className="text-xs text-vibe-elements-textTertiary">
             {dirty ? 'Unsaved changes' : 'Up to date'}
           </span>
         )}
@@ -97,7 +97,7 @@ export function TemplateMetadataEditor({ skill, onUpdated }: TemplateMetadataEdi
           type="button"
           onClick={save}
           disabled={!dirty || saving}
-          className="rounded-md bg-bolt-elements-button-primary-background px-3 py-1.5 text-xs font-medium text-bolt-elements-button-primary-text transition-colors hover:bg-bolt-elements-button-primary-backgroundHover disabled:opacity-50"
+          className="rounded-md bg-vibe-elements-button-primary-background px-3 py-1.5 text-xs font-medium text-vibe-elements-button-primary-text transition-colors hover:bg-vibe-elements-button-primary-backgroundHover disabled:opacity-50"
         >
           {saving ? 'Saving…' : 'Save'}
         </button>
@@ -115,7 +115,7 @@ function EditField({
 }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-xs font-medium text-bolt-elements-textSecondary">
+      <span className="text-xs font-medium text-vibe-elements-textSecondary">
         {label}
       </span>
       {children}

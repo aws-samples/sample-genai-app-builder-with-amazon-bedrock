@@ -38,8 +38,12 @@ export class SandboxCluster extends Construct {
     // Fargate Task Definition
     this.taskDefinition = new ecs.FargateTaskDefinition(this, 'TaskDef', {
       family: `${stackPrefix}-sandbox-task`,
-      cpu: 2048,        // 2 vCPU
-      memoryLimitMiB: 6144, // 6 GB
+      cpu: 4096,        // 4 vCPU
+      memoryLimitMiB: 12288, // 12 GB — the GenAIIC template's Vite dep-optimize
+      // (esbuild scanning the full Cloudscape + Amplify graph) plus the agent,
+      // file watcher, and a concurrent npm install spikes memory; at 6 GB the
+      // esbuild service was being OOM-killed mid-transform, so /src/main.tsx
+      // 500'd and the preview stayed a white pane.
       ephemeralStorageGiB: 30,
     });
 
@@ -64,7 +68,7 @@ export class SandboxCluster extends Construct {
       containerName: `${stackPrefix}-sandbox-container`,
       image: props.image ?? (() => {
         const imageUri = process.env.SIDECAR_IMAGE_URI;
-        if (imageUri) {
+        if (imageUri && imageUri.includes('.dkr.ecr.')) {
           const [repoWithHost, tag] = imageUri.split(':');
           const repoName = repoWithHost.split('/').slice(1).join('/');
           const repo = ecr.Repository.fromRepositoryName(this, 'SidecarRepo', repoName);

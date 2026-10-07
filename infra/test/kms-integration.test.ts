@@ -22,7 +22,7 @@ describe('KMS Integration Tests', () => {
 
   test('should create customer-managed KMS key', () => {
     template.hasResourceProperties('AWS::KMS::Key', {
-      Description: 'Customer-managed KMS key for Bedrock Vibe encryption',
+      Description: 'Customer-managed KMS key for Vibe encryption',
       EnableKeyRotation: true
     });
   });

@@ -42,7 +42,7 @@ export function ExtractionProgress({ jobId, onReady }: ExtractionProgressProps) 
     return (
       <div className="mx-auto flex w-full max-w-xl flex-col gap-3 rounded-lg border border-red-500/40 bg-red-500/10 p-6">
         <h2 className="text-base font-medium text-red-400">Extraction failed</h2>
-        <p className="text-sm text-bolt-elements-textSecondary">{failure}</p>
+        <p className="text-sm text-vibe-elements-textSecondary">{failure}</p>
         {/*
          * Use an anchor (<Link>) rather than a navigate() button so the
          * control has native "go to URL" semantics: right-click menu,
@@ -51,7 +51,7 @@ export function ExtractionProgress({ jobId, onReady }: ExtractionProgressProps) 
          */}
         <Link
           to="/brand-templates"
-          className="self-start rounded-md bg-bolt-elements-button-secondary-background px-3 py-1.5 text-sm text-bolt-elements-button-secondary-text hover:bg-bolt-elements-button-secondary-backgroundHover"
+          className="self-start rounded-md bg-vibe-elements-button-secondary-background px-3 py-1.5 text-sm text-vibe-elements-button-secondary-text hover:bg-vibe-elements-button-secondary-backgroundHover"
         >
           Back to skills
         </Link>
@@ -60,18 +60,18 @@ export function ExtractionProgress({ jobId, onReady }: ExtractionProgressProps) 
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-xl flex-col items-center gap-4 rounded-lg border border-bolt-elements-borderColor bg-bolt-elements-background-depth-2 p-8 text-center">
-      <div className="i-svg-spinners:90-ring-with-bg text-3xl text-bolt-elements-loader-progress" />
-      <h2 className="text-base font-medium text-bolt-elements-textPrimary">
+    <div className="mx-auto flex w-full max-w-xl flex-col items-center gap-4 rounded-lg border border-vibe-elements-borderColor bg-vibe-elements-background-depth-2 p-8 text-center">
+      <div className="i-svg-spinners:90-ring-with-bg text-3xl text-vibe-elements-loader-progress" />
+      <h2 className="text-base font-medium text-vibe-elements-textPrimary">
         Extracting your brand template
       </h2>
-      <p className="min-h-[20px] text-sm text-bolt-elements-textSecondary">
+      <p className="min-h-[20px] text-sm text-vibe-elements-textSecondary">
         {progress?.message ?? 'Starting…'}
       </p>
       {typeof progress?.percent === 'number' && (
-        <div className="h-1 w-full overflow-hidden rounded bg-bolt-elements-background-depth-3">
+        <div className="h-1 w-full overflow-hidden rounded bg-vibe-elements-background-depth-3">
           <div
-            className="h-full bg-bolt-elements-loader-progress transition-all"
+            className="h-full bg-vibe-elements-loader-progress transition-all"
             style={{ width: `${progress.percent}%` }}
           />
         </div>

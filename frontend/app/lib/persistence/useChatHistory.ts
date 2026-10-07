@@ -4,7 +4,9 @@ import { atom } from 'nanostores';
 import type { Message } from 'ai';
 import { toast } from 'react-toastify';
 import { workbenchStore } from '~/lib/stores/workbench';
+import { readInviteToken } from '~/lib/runtime/container-runtime';
 import { getMessages, getNextId, getUrlId, openDatabase, setMessages } from './db';
+import { migrateLocalChats } from './sync';
 
 export interface ChatHistoryItem {
   id: string;
@@ -15,6 +17,59 @@ export interface ChatHistoryItem {
 }
 
 const persistenceEnabled = !import.meta.env.VITE_DISABLE_PERSISTENCE;
+
+/**
+ * Wait for the runtime to report the project an invite granted.
+ *
+ * Chat history loads as soon as the page mounts, but the grant only lands once the
+ * invite has been redeemed against the API — so without waiting, a guest would
+ * check for the shared conversation before it was theirs to read. Gives up rather
+ * than blocking the page: the files are shared either way.
+ */
+async function waitForSharedProject(timeoutMs = 12000): Promise<string | null> {
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const shared = (window as any).__SHARED_PROJECT_ID__ as string | undefined;
+
+    if (shared) {
+      return shared;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  return null;
+}
+
+/** Guard so the one-off migration does not run again on every mount. */
+let migrationStarted = false;
+
+/**
+ * Upload pre-existing local history to the server, once per page load.
+ *
+ * Reads the local store directly rather than via getAll, which merges in the
+ * server's list — that would be circular here.
+ */
+async function migrateOnce(database: IDBDatabase): Promise<void> {
+  if (migrationStarted) {
+    return;
+  }
+
+  migrationStarted = true;
+
+  const local = await new Promise<ChatHistoryItem[]>((resolve) => {
+    try {
+      const request = database.transaction('chats', 'readonly').objectStore('chats').getAll();
+      request.onsuccess = () => resolve(request.result as ChatHistoryItem[]);
+      request.onerror = () => resolve([]);
+    } catch {
+      resolve([]);
+    }
+  });
+
+  await migrateLocalChats(local);
+}
 
 // Initialize db as undefined and only open it on the client side
 export let db: IDBDatabase | undefined = undefined;
@@ -57,6 +112,13 @@ export function useChatHistory() {
         // console.log('🔄 initializeDatabase: Opening database...');
         db = await openDatabase();
         // console.log('🔄 initializeDatabase: Database opened:', !!db);
+
+        // Lift any history that predates server storage, once per load. Runs in
+        // the background: it must not delay opening the project the user asked
+        // for, and it is safe to repeat because uploading is idempotent.
+        if (db) {
+          void migrateOnce(db);
+        }
       }
 
       if (!db) {
@@ -83,6 +145,28 @@ export function useChatHistory() {
             setUrlId(storedMessages.urlId);
             description.set(storedMessages.description);
             chatId.set(storedMessages.id);
+          } else if (readInviteToken()) {
+            // Someone arriving on an invite link has no local history for this
+            // chat. Redirecting would drop the invite token from the URL and
+            // silently put them in a fresh solo sandbox instead of the session
+            // they were invited to, so stay put and let the runtime redeem it.
+            chatId.set(mixedId);
+
+            // Redeeming the invite grants the inviter's project, so the
+            // conversation behind the shared files can be loaded rather than
+            // leaving the guest with an empty chat panel.
+            const shared = await waitForSharedProject();
+
+            if (shared) {
+              const sharedChat = await getMessages(db, shared);
+
+              if (sharedChat?.messages?.length) {
+                setInitialMessages(sharedChat.messages);
+                setUrlId(sharedChat.urlId);
+                description.set(sharedChat.description);
+                chatId.set(sharedChat.id);
+              }
+            }
           } else {
             // console.log('🔄 initializeDatabase: No messages found, navigating to root');
             // Use setTimeout to ensure navigation happens after current render cycle
@@ -118,16 +202,22 @@ export function useChatHistory() {
 
       const { firstArtifact } = workbenchStore;
 
+      // Held locally as well as in state: `setUrlId` only affects the NEXT render,
+      // so reading the state variable below would save this turn with no slug at
+      // all — which is how the server came to hold projects with no `urlId`, and
+      // how a collaborator ended up on a different URL from the owner.
+      let effectiveUrlId = urlId;
+
       if (!urlId && firstArtifact?.id) {
         // console.log('💾 storeMessageHistory: Creating new URL ID for artifact:', firstArtifact.id);
-        const newUrlId = await getUrlId(db, firstArtifact.id);
+        effectiveUrlId = await getUrlId(db, firstArtifact.id);
 
         // console.log('💾 storeMessageHistory: Navigating to new URL:', newUrlId);
         // Use setTimeout to ensure navigation happens after current render cycle
         setTimeout(() => {
-          navigateChat(newUrlId, navigate);
+          navigateChat(effectiveUrlId as string, navigate);
         }, 0);
-        setUrlId(newUrlId);
+        setUrlId(effectiveUrlId);
       }
 
       if (!description.get() && firstArtifact?.title) {
@@ -137,11 +227,11 @@ export function useChatHistory() {
 
       if (initialMessages.length === 0 && !chatId.get()) {
         // console.log('💾 storeMessageHistory: Creating new chat ID');
-        const nextId = await getNextId(db);
+        const nextId = await getNextId();
 
         chatId.set(nextId);
 
-        if (!urlId) {
+        if (!effectiveUrlId) {
           // console.log('💾 storeMessageHistory: Navigating to new chat ID:', nextId);
           // Use setTimeout to ensure navigation happens after current render cycle
           setTimeout(() => {
@@ -151,7 +241,7 @@ export function useChatHistory() {
       }
 
       // console.log('💾 storeMessageHistory: Saving messages to database');
-      await setMessages(db, chatId.get() as string, messages, urlId, description.get());
+      await setMessages(db, chatId.get() as string, messages, effectiveUrlId, description.get());
       // console.log('💾 storeMessageHistory: Messages saved successfully');
     },
   };

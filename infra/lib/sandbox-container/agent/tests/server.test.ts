@@ -239,4 +239,154 @@ describe('WebSocket server', () => {
     expect(msg.type).toBe('system:ready:event');
     ws2.close();
   });
+
+  /**
+   * Authorisation is not this server's job: CloudFront admits the upgrade only
+   * with a signed URL for the session, and the ALB forwards only CloudFront's
+   * traffic. The server must therefore tolerate whatever query string that
+   * leaves on the URL and key purely on the session id in the path.
+   */
+  describe('upgrade', () => {
+    it('serves the session named in the path, ignoring CloudFront signing parameters', async () => {
+      wss = startServer(port);
+      const sid = randomUUID();
+      const ws = new WebSocket(
+        `ws://localhost:${port}/ws/${sid}?Policy=abc~&Signature=def_-&Key-Pair-Id=K2TEST`,
+      );
+      const msg = await new Promise<any>((resolve, reject) => {
+        ws.on('message', (data) => resolve(JSON.parse(data.toString())));
+        ws.on('error', reject);
+      });
+      expect(msg.type).toBe('system:ready:event');
+      ws.close();
+    });
+
+    it.each([
+      // Paths CloudFront does not require a signature for must never open a
+      // session socket, even when an id appears elsewhere in the URL.
+      ['an id smuggled in the query string', (sid: string) => `/ws?/ws/${sid}`],
+      ['an id under another path', (sid: string) => `/other/ws/${sid}`],
+      ['an id followed by extra segments', (sid: string) => `/ws/${sid}/extra`],
+    ])('refuses %s', async (_label, pathFor) => {
+      wss = startServer(port);
+      const ws = new WebSocket(`ws://localhost:${port}${pathFor(randomUUID())}`);
+      const code = await new Promise<number>((resolve, reject) => {
+        ws.on('close', (c) => resolve(c));
+        ws.on('message', () => reject(new Error('session socket was opened')));
+        ws.on('error', () => {});
+      });
+      expect(code).toBe(4000);
+    });
+  });
+  /**
+   * Multi-peer safety. Two collaborators share one session (one container): the
+   * second peer must be adopted without disturbing the first peer's workspace,
+   * and a connection presenting a *foreign* session id while peers are live must
+   * be refused rather than allowed to wipe the workdir out from under them.
+   */
+  describe('multi-peer safety', () => {
+    it('adopts a second peer on the same session without wiping the workdir', async () => {
+      wss = startServer(port);
+
+      const sid = randomUUID();
+      const { ws: a, messages: aMsgs } = await connectWithQueue(sid);
+      await aMsgs.next(); // ready
+
+      // Peer A creates a file — this stands in for "work in progress".
+      const marker = path.join(tmpDir, 'peer-a-work.txt');
+      await fs.writeFile(marker, 'important work');
+
+      // Peer B joins the SAME session while A is still connected.
+      const { ws: b, messages: bMsgs } = await connectWithQueue(sid);
+      const ready = await bMsgs.next();
+      expect(ready.type).toBe('system:ready:event');
+
+      // A's work must survive B joining.
+      await expect(fs.readFile(marker, 'utf-8')).resolves.toBe('important work');
+
+      a.close();
+      b.close();
+    });
+
+    it('refuses a foreign session id while peers are connected, preserving their workdir', async () => {
+      wss = startServer(port);
+
+      const sid = randomUUID();
+      const { ws: a, messages: aMsgs } = await connectWithQueue(sid);
+      await aMsgs.next(); // ready
+
+      const marker = path.join(tmpDir, 'peer-a-work.txt');
+      await fs.writeFile(marker, 'important work');
+
+      // A stray client (e.g. mis-routed by the load balancer) presents a
+      // DIFFERENT session id while A is still live. It must be closed, not
+      // adopted — adopting it would clean the workdir and kill A's processes.
+      const strayId = randomUUID();
+      const stray = new WebSocket(`ws://localhost:${port}/ws/${strayId}`);
+      const closeCode = await new Promise<number>((resolve, reject) => {
+        stray.on('close', (code) => resolve(code));
+        stray.on('error', () => {
+          /* close event still fires */
+        });
+        setTimeout(() => reject(new Error('stray connection was not closed')), 5000);
+      });
+
+      expect(closeCode).toBe(4001);
+
+      // A's work must be untouched.
+      await expect(fs.readFile(marker, 'utf-8')).resolves.toBe('important work');
+
+      a.close();
+    });
+
+    it('delivers shared filesystem events to every peer, not just the newest', async () => {
+      wss = startServer(port);
+
+      const sid = randomUUID();
+      const { ws: a, messages: aMsgs } = await connectWithQueue(sid);
+      await aMsgs.next(); // ready
+
+      const { ws: b, messages: bMsgs } = await connectWithQueue(sid);
+      await bMsgs.next(); // ready
+
+      // Writing through B changes shared container state, so BOTH peers must
+      // learn about it — previously the most recent connection captured the
+      // event stream and earlier peers were left stale.
+      b.send(JSON.stringify(makeReq('fs:write:req', { path: 'shared.txt', content: 'hello' })));
+
+      const seen = async (messages: ReturnType<typeof createMessageQueue>) => {
+        // Skip the write response; wait for the broadcast change event.
+        for (let i = 0; i < 6; i++) {
+          const msg = await messages.next(8000);
+          if (msg.type === 'fs:change:event') {
+            return msg;
+          }
+        }
+        throw new Error('no fs:change:event received');
+      };
+
+      const [aEvent, bEvent] = await Promise.all([seen(aMsgs), seen(bMsgs)]);
+      expect(aEvent.type).toBe('fs:change:event');
+      expect(bEvent.type).toBe('fs:change:event');
+
+      a.close();
+      b.close();
+    });
+
+    it('still adopts a new session once the previous peers have all left', async () => {
+      wss = startServer(port);
+
+      const first = randomUUID();
+      const { ws: a, messages: aMsgs } = await connectWithQueue(first);
+      await aMsgs.next(); // ready
+      a.close();
+      await new Promise((r) => setTimeout(r, 200));
+
+      // Room is empty now, so a genuinely new session is free to claim the box.
+      const { ws: b, messages: bMsgs } = await connectWithQueue(randomUUID());
+      const ready = await bMsgs.next();
+      expect(ready.type).toBe('system:ready:event');
+      b.close();
+    });
+  });
 });

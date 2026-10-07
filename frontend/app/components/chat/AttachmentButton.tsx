@@ -54,7 +54,7 @@ export function AttachmentButton({
         ref={buttonRef}
         onClick={() => setIsOpen(!isOpen)}
         disabled={disabled}
-        className="flex items-center justify-center w-8 h-8 rounded-full bg-bolt-elements-background-depth-3 border border-bolt-elements-borderColor text-bolt-elements-textSecondary hover:text-bolt-elements-textPrimary hover:bg-bolt-elements-background-depth-4 transition-theme disabled:opacity-30 disabled:cursor-not-allowed"
+        className="flex items-center justify-center w-8 h-8 rounded-full bg-vibe-elements-background-depth-3 border border-vibe-elements-borderColor text-vibe-elements-textSecondary hover:text-vibe-elements-textPrimary hover:bg-vibe-elements-background-depth-4 transition-theme disabled:opacity-30 disabled:cursor-not-allowed"
         aria-label="Add attachments"
         title="Add attachments"
       >
@@ -64,18 +64,18 @@ export function AttachmentButton({
       {isOpen && (
         <div
           ref={popoverRef}
-          className="absolute bottom-full left-0 mb-2 bg-bolt-elements-background-depth-2 border border-bolt-elements-borderColor rounded-lg shadow-lg overflow-hidden z-50 min-w-[200px]"
+          className="absolute bottom-full left-0 mb-2 bg-vibe-elements-background-depth-2 border border-vibe-elements-borderColor rounded-lg shadow-lg overflow-hidden z-50 min-w-[200px]"
         >
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="flex items-left gap-3 w-full px-4 py-3 text-sm text-bolt-elements-textPrimary hover:bg-bolt-elements-background-depth-3 transition-theme"
+            className="flex items-left gap-3 w-full px-4 py-3 text-sm text-vibe-elements-textPrimary hover:bg-vibe-elements-background-depth-3 transition-theme"
           >
             <div className="i-ph:paperclip text-lg" />
             Upload files
           </button>
           <button
             onClick={() => imageInputRef.current?.click()}
-            className="flex items-left gap-3 w-full px-4 py-3 text-sm text-bolt-elements-textPrimary hover:bg-bolt-elements-background-depth-3 transition-theme"
+            className="flex items-left gap-3 w-full px-4 py-3 text-sm text-vibe-elements-textPrimary hover:bg-vibe-elements-background-depth-3 transition-theme"
           >
             <div className="i-ph:image text-lg" />
             Upload reference image
@@ -86,7 +86,7 @@ export function AttachmentButton({
                 setIsOpen(false);
                 setSkillPickerOpen(true);
               }}
-              className="flex items-left gap-3 w-full px-4 py-3 text-sm text-bolt-elements-textPrimary hover:bg-bolt-elements-background-depth-3 transition-theme border-t border-bolt-elements-borderColor"
+              className="flex items-left gap-3 w-full px-4 py-3 text-sm text-vibe-elements-textPrimary hover:bg-vibe-elements-background-depth-3 transition-theme border-t border-vibe-elements-borderColor"
             >
               <div className="i-ph:paint-brush-broad text-lg" />
               Attach brand template

@@ -50,11 +50,29 @@ function patchViteConfig(cwd: string): void {
   const PREVIEW_BASE = process.env.PREVIEW_BASE_PATH || '/sandbox-preview/';
 
   try {
-    const files = readdirSync(cwd);
-    const viteConfig = files.find((f) => /^vite\.config\.(js|ts|mjs|mts)$/.test(f));
-    if (!viteConfig) return;
+    // The vite config is normally at the workdir root, but the GenAIIC template
+    // puts the app under frontend/ (the dev command is `cd frontend && …`).
+    // Look in the root first, then frontend/, so both layouts get patched.
+    const candidateDirs = [cwd, join(cwd, 'frontend')];
+    let configDir: string | undefined;
+    let viteConfig: string | undefined;
 
-    const filePath = join(cwd, viteConfig);
+    for (const dir of candidateDirs) {
+      try {
+        const found = readdirSync(dir).find((f) => /^vite\.config\.(js|ts|mjs|mts)$/.test(f));
+        if (found) {
+          configDir = dir;
+          viteConfig = found;
+          break;
+        }
+      } catch {
+        // Directory may not exist (e.g. no frontend/) — try the next candidate.
+      }
+    }
+
+    if (!configDir || !viteConfig) return;
+
+    const filePath = join(configDir, viteConfig);
     let content = readFileSync(filePath, 'utf-8');
     let patched = false;
 
@@ -128,6 +146,15 @@ function patchViteConfig(cwd: string): void {
       }
     }
 
+    // --- HMR behind the reverse proxy ---
+    // Vite's HMR client opens its own WebSocket back to the dev server on the
+    // same origin + base path (/sandbox-preview/{id}/). The sidecar now proxies
+    // that upgrade to Vite (see server.ts `proxyUpgradeToVite`), so HMR connects
+    // and the preview hot-reloads. We therefore do NOT inject `hmr: false` — that
+    // was a workaround for when the upgrade was rejected, and in Vite 6 it did not
+    // even stop the client's reconnect loop (the @vite/client script is injected
+    // regardless), which is exactly what left the template preview blank.
+
     if (patched) {
       writeFileSync(filePath, content);
       console.log(`[shell] Patched ${viteConfig} for reverse-proxy (host + allowedHosts + base)`);
@@ -146,10 +173,30 @@ export type EventEmitter = (event: WSEvent) => void;
  */
 export class ShellManager {
   private processes: Map<number, ChildProcess> = new Map();
+  /** PIDs of dev-server processes this manager started, for the reuse check. */
+  private devServerPids: Set<number> = new Set();
   private emit: EventEmitter;
 
   constructor(emit: EventEmitter) {
     this.emit = emit;
+  }
+
+  /**
+   * Whether a dev server started by this manager is still running.
+   *
+   * Used to avoid killing a shared dev server when a second collaborator issues
+   * their own dev-server command — see {@link handleExec}.
+   */
+  hasLiveDevServer(): boolean {
+    for (const pid of this.devServerPids) {
+      const child = this.processes.get(pid);
+      if (child && child.exitCode === null && !child.killed) {
+        return true;
+      }
+      // Exited or untracked — forget it so the set does not grow unbounded.
+      this.devServerPids.delete(pid);
+    }
+    return false;
   }
 
   /**
@@ -181,11 +228,22 @@ export class ShellManager {
       let command = payload.command;
       const isDevServer = /\b(npm run dev|npx vite|vite)\b/.test(command);
       if (isDevServer) {
-        // Kill any existing dev server on common ports before starting a new one
-        try {
-          execSync('lsof -t -i:5173 -i:3000 -i:3001 -sTCP:LISTEN | xargs kill -9 2>/dev/null || true', { stdio: 'ignore' });
-        } catch {
-          // Best effort
+        // Kill any stale dev server on the common ports before starting a new
+        // one — but never one this manager is already running for the session.
+        //
+        // With two collaborators in a session, the second peer's dev-server
+        // command would otherwise kill -9 the server the first peer started,
+        // taking down the shared preview for everyone. A dev server we are still
+        // tracking is live and owned by this session, so leave it alone; only
+        // orphans (e.g. survivors of a previous session) get cleaned up.
+        if (!this.hasLiveDevServer()) {
+          try {
+            execSync('lsof -t -i:5173 -i:3000 -i:3001 -sTCP:LISTEN | xargs kill -9 2>/dev/null || true', { stdio: 'ignore' });
+          } catch {
+            // Best effort
+          }
+        } else {
+          console.log('[shell] Dev server already running for this session — not killing it');
         }
         patchViteConfig(cwd);
         // Inject --host 0.0.0.0 so Vite binds on all interfaces (ALB needs this).
@@ -206,6 +264,9 @@ export class ShellManager {
 
       const pid = child.pid ?? -1;
       this.processes.set(pid, child);
+      if (isDevServer) {
+        this.devServerPids.add(pid);
+      }
 
       let stdout = '';
       let stderr = '';
@@ -223,6 +284,12 @@ export class ShellManager {
       child.stdout?.on('data', (chunk: Buffer) => {
         const data = chunk.toString('utf-8');
         stdout += data;
+        // Mirror dev-server output to the container console (→ CloudWatch) so
+        // failures like esbuild crashes or npm errors are diagnosable without a
+        // live WebSocket client. Only for dev servers, to avoid log spam.
+        if (isDevServer) {
+          console.log(`[devserver:stdout pid=${pid}] ${data.trimEnd()}`);
+        }
         this.emit(
           createEvent('shell:output:event', {
             processId: pid,
@@ -235,6 +302,9 @@ export class ShellManager {
       child.stderr?.on('data', (chunk: Buffer) => {
         const data = chunk.toString('utf-8');
         stderr += data;
+        if (isDevServer) {
+          console.log(`[devserver:stderr pid=${pid}] ${data.trimEnd()}`);
+        }
         this.emit(
           createEvent('shell:output:event', {
             processId: pid,
@@ -247,6 +317,10 @@ export class ShellManager {
       child.on('close', (exitCode: number | null) => {
         if (timeoutHandle) clearTimeout(timeoutHandle);
         this.processes.delete(pid);
+
+        if (isDevServer) {
+          console.log(`[devserver:exit pid=${pid}] exitCode=${killed ? 'killed' : exitCode}`);
+        }
 
         resolve(
           createResponse(msg.id, 'shell:exec:res', {
@@ -295,6 +369,7 @@ export class ShellManager {
       killProcessGroup(child);
       this.processes.delete(pid);
     }
+    this.devServerPids.clear();
   }
 
   /**

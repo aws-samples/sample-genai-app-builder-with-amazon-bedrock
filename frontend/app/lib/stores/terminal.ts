@@ -9,13 +9,14 @@ interface ContainerTerminal {
 }
 
 export class TerminalStore {
-  #connection: Promise<RuntimeConnection>;
+  /** Resolve a healthy connection on demand; see {@link getConnection}. */
+  #connect: () => Promise<RuntimeConnection>;
   #terminals: ContainerTerminal[] = [];
 
   showTerminal: WritableAtom<boolean> = import.meta.hot?.data.showTerminal ?? atom(false);
 
-  constructor(connectionPromise: Promise<RuntimeConnection>) {
-    this.#connection = connectionPromise;
+  constructor(connect: () => Promise<RuntimeConnection>) {
+    this.#connect = connect;
 
     if (import.meta.hot) {
       import.meta.hot.data.showTerminal = this.showTerminal;
@@ -28,7 +29,7 @@ export class TerminalStore {
 
   async attachTerminal(terminal: ITerminal) {
     try {
-      const conn = await this.#connection;
+      const conn = await this.#connect();
 
       // Create terminal on the sidecar
       const response = await conn.request<TerminalCreateResponse>({
@@ -74,7 +75,7 @@ export class TerminalStore {
   }
 
   async onTerminalResize(cols: number, rows: number) {
-    const conn = await this.#connection;
+    const conn = await this.#connect();
 
     for (const { terminalId } of this.#terminals) {
       conn.request({

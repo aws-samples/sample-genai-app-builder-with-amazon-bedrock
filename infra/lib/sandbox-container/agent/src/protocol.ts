@@ -147,6 +147,27 @@ export interface PortListResponsePayload {
   ports: Array<{ port: number; pid?: number }>;
 }
 
+// ── Collaboration payload types (Yjs relay) ─────────────────────────
+
+/**
+ * A single opaque collaboration frame relayed between peers in a room.
+ *
+ * The server NEVER decodes `data`: it is a base64-encoded Yjs sync-protocol
+ * or Awareness-protocol message produced and consumed entirely on the client.
+ * The container filesystem stays the source of truth for project content; the
+ * shared `Y.Doc` is seeded from file content on the client, so the relay holds
+ * no CRDT state of its own. The client-side y-protocols decoder is the sole
+ * validation layer for these frames.
+ *
+ * Two actions travel under the `yjs` namespace, both carrying this payload:
+ *   - `yjs:sync:req`      — document update / sync-step frames
+ *   - `yjs:awareness:req` — ephemeral presence (cursor, selection, name, color)
+ */
+export interface YjsRelayPayload {
+  /** base64-encoded opaque Yjs/Awareness protocol bytes */
+  data: string;
+}
+
 // ── System payload types ────────────────────────────────────────────
 
 export interface SystemReadyEventPayload {
@@ -166,7 +187,7 @@ export interface SystemErrorEventPayload {
 
 // ── Namespace type ──────────────────────────────────────────────────
 
-export type Namespace = 'fs' | 'terminal' | 'shell' | 'port' | 'system';
+export type Namespace = 'fs' | 'terminal' | 'shell' | 'port' | 'system' | 'yjs';
 
 // ── Helper functions ────────────────────────────────────────────────
 
@@ -178,7 +199,7 @@ export function getNamespace(type: string): Namespace | null {
   const parts = type.split(':');
   if (parts.length < 3) return null;
   const ns = parts[0];
-  if (['fs', 'terminal', 'shell', 'port', 'system'].includes(ns)) {
+  if (['fs', 'terminal', 'shell', 'port', 'system', 'yjs'].includes(ns)) {
     return ns as Namespace;
   }
   return null;

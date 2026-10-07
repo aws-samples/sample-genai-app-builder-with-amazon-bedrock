@@ -8,6 +8,8 @@ import { useMessageParser, usePromptEnhancer, useShortcuts, useSnapScroll } from
 import { useChatHistory } from '~/lib/persistence';
 import { chatId as chatIdStore } from '~/lib/persistence';
 import { chatStore } from '~/lib/stores/chat';
+import { collabStore } from '~/lib/collab/collab-store';
+import { publishChatMessages, syncChatMessages } from '~/lib/collab/chat-collab';
 import { workbenchStore } from '~/lib/stores/workbench';
 import { templateSettingsStore } from '~/lib/stores/templateSettings';
 import { fileModificationsToHTML } from '~/utils/diff';
@@ -25,6 +27,7 @@ import { getBrandTemplatesClient } from '~/lib/brand-templates/client';
 import { renderBrandTemplateBlock } from '~/lib/brand-templates/system-prompt';
 import { BaseChat } from './BaseChat';
 import { signedFetch } from '~/lib/api/signed-fetch';
+import { readInviteToken } from '~/lib/runtime/container-runtime';
 
 const toastAnimation = cssTransition({
   enter: 'animated fadeInRight',
@@ -57,10 +60,10 @@ export function Chat() {
            */
           switch (type) {
             case 'success': {
-              return <div className="i-ph:check-bold text-bolt-elements-icon-success text-2xl" />;
+              return <div className="i-ph:check-bold text-vibe-elements-icon-success text-2xl" />;
             }
             case 'error': {
-              return <div className="i-ph:warning-circle-bold text-bolt-elements-icon-error text-2xl" />;
+              return <div className="i-ph:warning-circle-bold text-vibe-elements-icon-error text-2xl" />;
             }
           }
 
@@ -85,7 +88,12 @@ export const ChatImpl = memo(({ initialMessages, storeMessageHistory }: ChatProp
   useShortcuts();
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [chatStarted, setChatStarted] = useState(initialMessages.length > 0);
+  // An invited collaborator has no local messages — the conversation lives in the
+  // inviter's browser — but they are joining a project that is already running, so
+  // treat the chat as started. Otherwise they would land on the empty "what would
+  // you like to build" prompt with the workbench hidden, and never see the shared
+  // files they were invited to.
+  const [chatStarted, setChatStarted] = useState(initialMessages.length > 0 || readInviteToken() !== null);
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const [attachedSkillId, setAttachedSkillIdState] = useState<string | null>(null);
   // Mirror of attachedSkillId read by the chat-id rehydrate effect without
@@ -208,6 +216,32 @@ export const ChatImpl = memo(({ initialMessages, storeMessageHistory }: ChatProp
     }
   }, [messages, isLoading, parseMessages, initialMessages.length, storeMessageHistory]);
 
+  // Mirror the conversation to collaborators as it happens. Saving to DynamoDB
+  // makes history durable, but it is only read when a project mounts — so
+  // without this a prompt one person sends appears to the other on a reload and
+  // not before, in a session where their keystrokes already mirror live.
+  const collabProvider = useStore(collabStore.provider);
+
+  useEffect(() => {
+    if (!collabProvider || messages.length === 0) {
+      return;
+    }
+
+    publishChatMessages(collabProvider.doc, messages);
+  }, [collabProvider, messages]);
+
+  useEffect(() => {
+    if (!collabProvider) {
+      return;
+    }
+
+    // Reads the shared conversation immediately as well as observing it. An
+    // observer only fires on a later transaction, and a peer's whole conversation
+    // arrives in the single frame that answers our handshake — which can land
+    // before this effect runs, and always has by the time a reloaded tab gets here.
+    return syncChatMessages(collabProvider.doc, setMessages);
+  }, [collabProvider, setMessages]);
+
   const scrollTextArea = () => {
     const textarea = textareaRef.current;
 
@@ -318,6 +352,14 @@ export const ChatImpl = memo(({ initialMessages, storeMessageHistory }: ChatProp
       });
     });
   }, [attachments]);
+
+  // Open the workbench for an invited collaborator. They have no chat messages to
+  // click through to it, and the files are the whole reason they followed the link.
+  useEffect(() => {
+    if (readInviteToken()) {
+      workbenchStore.showWorkbench.set(true);
+    }
+  }, []);
 
   const runAnimation = async () => {
     if (chatStarted) {

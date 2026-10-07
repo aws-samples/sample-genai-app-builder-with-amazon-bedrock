@@ -27,7 +27,7 @@ export function TemplateCard({ skill, onDelete }: TemplateCardProps) {
   const statusChip = STATUS_CHIPS[skill.status];
 
   return (
-    <article className="group relative flex flex-col overflow-hidden rounded-lg border border-bolt-elements-borderColor bg-bolt-elements-background-depth-2 transition-colors hover:border-bolt-elements-focus focus-within:border-bolt-elements-focus">
+    <article className="group relative flex flex-col overflow-hidden rounded-lg border border-vibe-elements-borderColor bg-vibe-elements-background-depth-2 transition-colors hover:border-vibe-elements-focus focus-within:border-vibe-elements-focus">
       <Link
         to={`/brand-templates/${skill.skillId}`}
         aria-label={`Open ${skill.name}`}
@@ -37,10 +37,10 @@ export function TemplateCard({ skill, onDelete }: TemplateCardProps) {
 
         <div className="flex min-w-0 items-start gap-2">
           <div className="min-w-0 flex-1">
-            <h3 className="truncate text-sm font-medium text-bolt-elements-textPrimary">
+            <h3 className="truncate text-sm font-medium text-vibe-elements-textPrimary">
               {skill.name}
             </h3>
-            <p className="mt-0.5 truncate text-xs text-bolt-elements-textTertiary">
+            <p className="mt-0.5 truncate text-xs text-vibe-elements-textTertiary">
               {skill.styleDescriptorLabel || '—'}
             </p>
           </div>
@@ -58,7 +58,7 @@ export function TemplateCard({ skill, onDelete }: TemplateCardProps) {
             {skill.tags!.slice(0, 4).map((tag) => (
               <span
                 key={tag}
-                className="rounded bg-bolt-elements-background-depth-3 px-1.5 py-0.5 text-[10px] text-bolt-elements-textSecondary"
+                className="rounded bg-vibe-elements-background-depth-3 px-1.5 py-0.5 text-[10px] text-vibe-elements-textSecondary"
               >
                 {tag}
               </span>
@@ -79,7 +79,7 @@ export function TemplateCard({ skill, onDelete }: TemplateCardProps) {
           }}
           aria-label="Delete template"
           title="Delete"
-          className="absolute right-2 top-2 rounded p-1 text-bolt-elements-textTertiary opacity-0 transition-opacity hover:bg-bolt-elements-background-depth-3 hover:text-red-400 focus:opacity-100 group-hover:opacity-100"
+          className="absolute right-2 top-2 rounded p-1 text-vibe-elements-textTertiary opacity-0 transition-opacity hover:bg-vibe-elements-background-depth-3 hover:text-red-400 focus:opacity-100 group-hover:opacity-100"
         >
           <div className="i-ph:trash text-sm" />
         </button>

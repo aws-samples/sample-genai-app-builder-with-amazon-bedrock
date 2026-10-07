@@ -9,7 +9,15 @@ export interface SandboxAlbProps {
   vpc: ec2.IVpc;
   albSg: ec2.ISecurityGroup;
   logsBucket?: s3.IBucket;
+  /**
+   * Value CloudFront sends in the `X-Origin-Verify` header. Every forwarding rule
+   * requires it, so only this stack's distributions reach the containers.
+   */
+  originVerifyHeaderValue: string;
 }
+
+/** Header CloudFront adds to every request it forwards to the sandbox ALB. */
+export const ORIGIN_VERIFY_HEADER = 'X-Origin-Verify';
 
 export class SandboxAlb extends Construct {
   public readonly alb: elbv2.ApplicationLoadBalancer;
@@ -19,7 +27,13 @@ export class SandboxAlb extends Construct {
   constructor(scope: Construct, id: string, props: SandboxAlbProps) {
     super(scope, id);
 
-    const { stackPrefix, vpc, albSg, logsBucket } = props;
+    const { stackPrefix, vpc, albSg, logsBucket, originVerifyHeaderValue } = props;
+
+    // Only requests carrying this stack's origin-verify header are forwarded;
+    // anything else falls through to the default 503.
+    const fromOurCloudFront = elbv2.ListenerCondition.httpHeader(ORIGIN_VERIFY_HEADER, [
+      originVerifyHeaderValue,
+    ]);
 
     // Application Load Balancer (internet-facing for CloudFront)
     this.alb = new elbv2.ApplicationLoadBalancer(this, 'Alb', {
@@ -59,6 +73,9 @@ export class SandboxAlb extends Construct {
     this.alb.addListener('HttpListener', {
       port: 80,
       protocol: elbv2.ApplicationProtocol.HTTP,
+      // Ingress is managed in sandbox-security.ts (CloudFront only); without this
+      // CDK opens the listener port to 0.0.0.0/0.
+      open: false,
       defaultAction: elbv2.ListenerAction.redirect({
         protocol: 'HTTPS',
         port: '443',
@@ -71,18 +88,25 @@ export class SandboxAlb extends Construct {
     this.httpsListener = this.alb.addListener('HttpsListenerV2', {
       port: 443,
       protocol: elbv2.ApplicationProtocol.HTTP, // Use HTTP for now; swap to HTTPS with cert
+      open: false,
       defaultAction: elbv2.ListenerAction.fixedResponse(503, {
         contentType: 'text/plain',
         messageBody: 'No active preview session',
       }),
     });
 
-    // WebSocket route: /ws/* → sidecar TG (round-robin).
-    // The sidecar validates the sessionId and rejects mismatched connections.
+    // WebSocket fallback: /ws/* → sidecar TG (round-robin).
+    //
+    // Deliberately a high priority number. ALB evaluates rules in ascending
+    // priority and stops at the first match, so this path rule would shadow
+    // anything above it — and the session manager adds a per-session rule for
+    // each claimed sandbox (see alb-routing.ts) that must be evaluated first to
+    // land every collaborator on one container. This stays as the fallback for
+    // sessions that have no rule of their own.
     new elbv2.ApplicationListenerRule(this, 'WsRoute', {
       listener: this.httpsListener,
-      priority: 10,
-      conditions: [elbv2.ListenerCondition.pathPatterns(['/ws', '/ws/*'])],
+      priority: 900,
+      conditions: [elbv2.ListenerCondition.pathPatterns(['/ws/*']), fromOurCloudFront],
       action: elbv2.ListenerAction.forward([this.sidecarTargetGroup]),
     });
 
@@ -93,7 +117,10 @@ export class SandboxAlb extends Construct {
     new elbv2.ApplicationListenerRule(this, 'PreviewRoute', {
       listener: this.httpsListener,
       priority: 20,
-      conditions: [elbv2.ListenerCondition.pathPatterns(['/sandbox-preview', '/sandbox-preview/*'])],
+      conditions: [
+        elbv2.ListenerCondition.pathPatterns(['/sandbox-preview', '/sandbox-preview/*']),
+        fromOurCloudFront,
+      ],
       action: elbv2.ListenerAction.forward([this.sidecarTargetGroup]),
     });
   }

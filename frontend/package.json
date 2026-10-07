@@ -1,5 +1,5 @@
 {
-  "name": "bolt",
+  "name": "vibe",
   "description": "StackBlitz AI Agent",
   "private": true,
   "license": "MIT",
@@ -7,8 +7,11 @@
   "sideEffects": false,
   "type": "module",
   "scripts": {
+    "generate-template-manifest": "node generate-template-manifest.cjs",
+    "prebuild": "node generate-template-manifest.cjs",
     "postbuild": "cp ./package.json.lambda ./build/server/package.json",
     "build": "remix vite:build",
+    "predev": "node generate-template-manifest.cjs",
     "dev": "remix vite:dev",
     "test": "vitest --run",
     "test:watch": "vitest",
@@ -16,7 +19,7 @@
     "lint:fix": "npm run lint -- --fix",
     "typecheck": "tsc",
     "check-bedrock": "tsx scripts/check-bedrock-sso.ts",
-    "build:aws": "node generate-build-config.cjs && remix vite:build && node build.cjs",
+    "build:aws": "node generate-build-config.cjs && node generate-template-manifest.cjs && remix vite:build && node build.cjs",
     "deploy:aws": "pnpm run build:aws && cd ../infra && cdk deploy --require-approval never"
   },
   "engines": {
@@ -64,12 +67,14 @@
     "@xterm/xterm": "^5.5.0",
     "ai": "^3.4.33",
     "aws-amplify": "^6.15.4",
+    "aws-jwt-verify": "^5",
     "date-fns": "^3.6.0",
     "diff": "^5.2.0",
     "file-saver": "^2.0.5",
     "framer-motion": "^11.18.2",
     "jose": "^5.10.0",
     "jszip": "^3.10.1",
+    "lib0": "^0.2.117",
     "mammoth": "^1.9.0",
     "nanostores": "^0.10.3",
     "pdfjs-dist": "^4.10.38",
@@ -85,9 +90,13 @@
     "remix-island": "^0.2.0",
     "remix-utils": "^7.7.0",
     "shiki": "^1.29.2",
-    "unist-util-visit": "^5.0.0"
+    "unist-util-visit": "^5.0.0",
+    "y-codemirror.next": "^0.3.5",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.31"
   },
   "devDependencies": {
+    "@aws-sdk/cloudfront-signer": "^3",
     "@blitz/eslint-plugin": "0.1.0",
     "@remix-run/dev": "^2.17.4",
     "@types/aws-lambda": "^8.10.152",

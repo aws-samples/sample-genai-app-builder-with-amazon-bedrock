@@ -53,8 +53,8 @@ describeOrSkip('SandboxCluster', () => {
 
   test('creates Fargate task definition with correct CPU and memory', () => {
     template.hasResourceProperties('AWS::ECS::TaskDefinition', {
-      Cpu: '1024',
-      Memory: '3072',
+      Cpu: '4096',
+      Memory: '12288',
       EphemeralStorage: { SizeInGiB: 30 },
       RequiresCompatibilities: ['FARGATE'],
       NetworkMode: 'awsvpc',

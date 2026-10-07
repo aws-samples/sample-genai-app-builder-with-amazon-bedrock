@@ -146,6 +146,17 @@ export class PortDetector {
   }
 
   /**
+   * Ports currently known to be listening.
+   *
+   * `port:open:event` only fires on the transition into this set, so a peer that
+   * connects after the dev server is already up would otherwise never hear about
+   * it. Exposing the set lets the server replay it to an arriving peer.
+   */
+  getKnownPorts(): PortInfo[] {
+    return Array.from(this.knownPorts.values());
+  }
+
+  /**
    * Route a port:* message to the correct handler.
    */
   handle(msg: WSMessage): WSResponse {

@@ -157,6 +157,21 @@ describe('PortDetector', () => {
     });
   });
 
+  describe('getKnownPorts', () => {
+    it('starts empty and reports ports discovered by a scan', () => {
+      const events: unknown[] = [];
+      const detector = new PortDetector((e) => events.push(e), () => SS_OUTPUT_TWO_PORTS);
+
+      expect(detector.getKnownPorts()).toEqual([]);
+
+      detector.scan();
+
+      // A joiner arriving now needs this set replayed — the port:open:event for
+      // 5173 has already fired and will not fire again.
+      expect(detector.getKnownPorts().map((p) => p.port)).toContain(5173);
+    });
+  });
+
   describe('setEmitter', () => {
     it('routes events through the new emitter after swap', () => {
       const eventsA: WSEvent[] = [];

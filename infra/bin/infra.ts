@@ -17,6 +17,7 @@ const config = yaml.load(fs.readFileSync(configPath, 'utf8')) as {
   extractionModelId?: string;
   cognitoUsers?: string[];
   customDomain?: string;
+  alarmEmail?: string | string[];
 };
 
 new InfraStack(app, config.stackName, {

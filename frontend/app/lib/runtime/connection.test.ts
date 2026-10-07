@@ -18,8 +18,18 @@ class MockWebSocket {
 
   sent: string[] = [];
 
+  /**
+   * When false, new sockets stay CONNECTING. Needed to exhaust the reconnect
+   * budget: the real client resets its attempt counter on open.
+   */
+  static autoOpen = true;
+
   constructor(url: string) {
     this.url = url;
+
+    if (!MockWebSocket.autoOpen) {
+      return;
+    }
 
     // Simulate async connection
     setTimeout(() => {
@@ -57,6 +67,7 @@ let mockWsInstance: MockWebSocket;
 const originalWebSocket = globalThis.WebSocket;
 
 function installMockWebSocket() {
+  MockWebSocket.autoOpen = true;
   (globalThis as any).WebSocket = class extends MockWebSocket {
     constructor(url: string) {
       super(url);
@@ -135,15 +146,16 @@ describe('RuntimeConnectionImpl', () => {
       conn.close();
     });
 
-    it('should include auth token in URL when provided', async () => {
-      const conn = new RuntimeConnectionImpl({
-        ...defaultConfig,
-        authToken: 'my-jwt-token',
-      });
+    it('dials the signed endpoint exactly as issued, adding no user credential', async () => {
+      // The signature is what CloudFront checks, and a bearer token in the URL
+      // would land in CloudFront and ALB access logs.
+      const endpoint = 'ws://localhost:8080/ws/sess-1?Policy=abc&Signature=def&Key-Pair-Id=K2';
+      const conn = new RuntimeConnectionImpl({ ...defaultConfig, wsEndpoint: endpoint });
       const connectPromise = conn.connect();
 
       await vi.advanceTimersByTimeAsync(10);
-      expect(mockWsInstance.url).toContain('token=my-jwt-token');
+      expect(mockWsInstance.url).toBe(endpoint);
+
       sendReadyEvent();
       await connectPromise;
       conn.close();
@@ -346,6 +358,337 @@ describe('RuntimeConnectionImpl', () => {
       });
 
       expect(handler).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('readiness barrier', () => {
+    const reconnectConfig: RuntimeConfig = {
+      ...defaultConfig,
+      reconnect: true,
+      reconnectInterval: 100,
+      maxReconnectAttempts: 5,
+    };
+
+    async function connectReady(config: RuntimeConfig = reconnectConfig) {
+      const conn = new RuntimeConnectionImpl(config);
+      const p = conn.connect();
+      await vi.advanceTimersByTimeAsync(10);
+      sendReadyEvent();
+      await p;
+
+      return conn;
+    }
+
+    it('whenReady() resolves immediately while the socket is open', async () => {
+      const conn = await connectReady();
+
+      await expect(conn.whenReady()).resolves.toBeUndefined();
+
+      conn.close();
+    });
+
+    it('sends a request issued mid-reconnect once the connection is ready again', async () => {
+      // The prod failure this guards: the first write of an artifact landed while
+      // the socket was between sockets, rejected with 'Not connected', and the
+      // build then ran against an empty directory.
+      const conn = await connectReady();
+
+      mockWsInstance.simulateClose(1006, 'Connection lost');
+      expect(conn.isConnected()).toBe(false);
+
+      const requestPromise = conn.request({
+        type: 'fs:write:req' as any,
+        payload: { path: '/package.json', content: '{}' },
+      });
+
+      // Nothing may go on the wire while there is no open socket.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mockWsInstance.sent).toHaveLength(0);
+
+      // Let the reconnect fire and the new socket come up.
+      await vi.advanceTimersByTimeAsync(300);
+      sendReadyEvent();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(mockWsInstance.sent).toHaveLength(1);
+
+      const sentMsg = JSON.parse(mockWsInstance.sent[0]);
+      expect(sentMsg.type).toBe('fs:write:req');
+
+      mockWsInstance.simulateMessage({
+        id: crypto.randomUUID(),
+        type: 'fs:write:res',
+        requestId: sentMsg.id,
+        timestamp: Date.now(),
+        payload: { path: '/package.json' },
+      });
+
+      await expect(requestPromise).resolves.toMatchObject({ type: 'fs:write:res' });
+
+      conn.close();
+    });
+
+    it('rejects promptly, without waiting out the timeout, once close() has been called', async () => {
+      const conn = await connectReady();
+      conn.close();
+
+      const result = await conn.request({ type: 'fs:read:req' as any, payload: {} }).catch((e: Error) => e);
+
+      // No timers advanced: the rejection must be immediate, and must say why.
+      expect(result).toBeInstanceOf(Error);
+      expect((result as Error).message).toMatch(/closed by the client/i);
+
+      conn.close();
+    });
+
+    it('rejects with an exhaustion reason once the reconnect budget is spent', async () => {
+      const conn = await connectReady({ ...reconnectConfig, maxReconnectAttempts: 1 });
+
+      // Replacement sockets must not reach open, or the client resets its
+      // attempt counter and the budget never runs out.
+      MockWebSocket.autoOpen = false;
+
+      // First drop schedules the one and only reconnect attempt.
+      mockWsInstance.simulateClose(1006, 'Connection lost');
+      await vi.advanceTimersByTimeAsync(300);
+
+      // The replacement socket dies before opening, which spends the budget.
+      mockWsInstance.simulateClose(1006, 'Connection lost again');
+      await vi.advanceTimersByTimeAsync(300);
+
+      const result = await conn.request({ type: 'fs:read:req' as any, payload: {} }).catch((e: Error) => e);
+      expect(result).toBeInstanceOf(Error);
+      expect((result as Error).message).toMatch(/exhaust/i);
+
+      conn.close();
+    });
+
+    it('keeps the per-request timeout as the outer bound on a readiness wait', async () => {
+      // reconnectInterval is longer than the request budget, so readiness never
+      // arrives in time. The request must fail on its own timeout, not hang.
+      const conn = await connectReady({ ...reconnectConfig, reconnectInterval: 60000 });
+
+      mockWsInstance.simulateClose(1006, 'Connection lost');
+
+      const req = { type: 'fs:read:req' as any, payload: { path: '/slow' } };
+      const pending = conn.request(req, 200).catch((e: Error) => e);
+
+      await vi.advanceTimersByTimeAsync(500);
+
+      const result = await pending;
+      expect(result).toBeInstanceOf(Error);
+      expect((result as Error).message).toBe('Request timeout: fs:read:req');
+
+      conn.close();
+    });
+
+    it('still drops send() frames while offline rather than queueing them', async () => {
+      // Yjs resynchronises from scratch on reconnect, so a replayed update is at
+      // best redundant. send() must stay fire-and-forget.
+      const conn = await connectReady();
+
+      mockWsInstance.simulateClose(1006, 'Connection lost');
+
+      conn.send({ type: 'yjs:update:req' as any, payload: { update: 'abc' } });
+
+      await vi.advanceTimersByTimeAsync(300);
+      sendReadyEvent();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(mockWsInstance.sent).toHaveLength(0);
+
+      conn.close();
+    });
+  });
+
+  describe('liveness probe', () => {
+    // A half-open socket — TCP path dead, no FIN, so onclose never fires — still
+    // reads OPEN. Nothing else in the client notices: the readiness barrier takes
+    // its fast path while isConnected() is true, and requests sit on the 120s
+    // request timeout rather than failing as connection errors. The ping is the
+    // only thing that can tell, so a failed ping has to mean something.
+    const liveConfig: RuntimeConfig = {
+      ...defaultConfig,
+      reconnect: true,
+      reconnectInterval: 100,
+      maxReconnectAttempts: 5,
+      requestTimeout: 60000,
+      pingInterval: 1000,
+      pingTimeout: 200,
+    };
+
+    async function connectReady(config: RuntimeConfig = liveConfig) {
+      const conn = new RuntimeConnectionImpl(config);
+      const p = conn.connect();
+      await vi.advanceTimersByTimeAsync(10);
+      sendReadyEvent();
+      await p;
+
+      return conn;
+    }
+
+    /** Answer the most recent ping, i.e. behave like a live sidecar. */
+    function pong() {
+      const pings = mockWsInstance.sent.map((s) => JSON.parse(s)).filter((m) => m.type === 'system:ping:req');
+      expect(pings.length).toBeGreaterThan(0);
+
+      mockWsInstance.simulateMessage({
+        id: crypto.randomUUID(),
+        type: 'system:ping:res',
+        requestId: pings[pings.length - 1].id,
+        timestamp: Date.now(),
+        payload: {},
+      });
+    }
+
+    it('force-closes and reconnects a half-open socket whose pings go unanswered', async () => {
+      const conn = await connectReady();
+      const deadSocket = mockWsInstance;
+
+      // Two ping periods with no answer: probe at 1000 fails at 1200, probe at
+      // 2000 fails at 2200 and trips the threshold.
+      await vi.advanceTimersByTimeAsync(2300);
+
+      expect(deadSocket.readyState).not.toBe(MockWebSocket.OPEN);
+
+      // The existing onclose machinery must be what recovers, so a replacement
+      // socket appears after the backoff.
+      await vi.advanceTimersByTimeAsync(300);
+      expect(mockWsInstance).not.toBe(deadSocket);
+
+      sendReadyEvent();
+      expect(conn.isConnected()).toBe(true);
+
+      conn.close();
+    });
+
+    it('detects the dead socket long before the request timeout would', async () => {
+      // The point of a short probe budget: inheriting requestTimeout (120s in
+      // prod) makes a liveness check that cannot detect anything in time to help.
+      const conn = await connectReady();
+      const deadSocket = mockWsInstance;
+
+      await vi.advanceTimersByTimeAsync(2300);
+
+      expect(deadSocket.readyState).not.toBe(MockWebSocket.OPEN);
+      expect(2300).toBeLessThan(liveConfig.requestTimeout!);
+
+      conn.close();
+    });
+
+    it('never force-closes a socket that answers its pings', async () => {
+      const conn = await connectReady();
+      const socket = mockWsInstance;
+
+      for (let i = 0; i < 5; i++) {
+        await vi.advanceTimersByTimeAsync(1000);
+        pong();
+        await vi.advanceTimersByTimeAsync(0);
+      }
+
+      expect(conn.isConnected()).toBe(true);
+      expect(mockWsInstance).toBe(socket);
+      expect(socket.readyState).toBe(MockWebSocket.OPEN);
+
+      conn.close();
+    });
+
+    it('tolerates a single lost pong, and a later answer clears the count', async () => {
+      // One dropped answer is a slow sidecar or a GC pause, not a dead path.
+      // Killing the socket on it would trade a rare stall for frequent churn.
+      const conn = await connectReady();
+      const socket = mockWsInstance;
+
+      await vi.advanceTimersByTimeAsync(1300);
+      expect(socket.readyState).toBe(MockWebSocket.OPEN);
+
+      // Second probe is answered, which must reset the run of failures...
+      await vi.advanceTimersByTimeAsync(700);
+      pong();
+      await vi.advanceTimersByTimeAsync(0);
+
+      // ...so the next single failure is again only the first of its run.
+      await vi.advanceTimersByTimeAsync(1300);
+      expect(socket.readyState).toBe(MockWebSocket.OPEN);
+      expect(conn.isConnected()).toBe(true);
+
+      conn.close();
+    });
+
+    it('does not misread a ping killed by a genuine close as a half-open socket', async () => {
+      // With the readiness barrier in place a request can fail while the client
+      // is legitimately between sockets. Such a failure says nothing about
+      // liveness — the close has already scheduled a reconnect — and acting on it
+      // would close the healthy replacement and start a second reconnect.
+      const conn = await connectReady();
+      const firstSocket = mockWsInstance;
+
+      // Probe goes out, then the socket really drops with the ping in flight.
+      await vi.advanceTimersByTimeAsync(1000);
+      firstSocket.simulateClose(1006, 'Connection lost');
+
+      await vi.advanceTimersByTimeAsync(300);
+      const secondSocket = mockWsInstance;
+      expect(secondSocket).not.toBe(firstSocket);
+
+      sendReadyEvent();
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Exactly one reconnect, and the replacement is left alone.
+      expect(conn.isConnected()).toBe(true);
+      expect(secondSocket.readyState).toBe(MockWebSocket.OPEN);
+
+      // The failed in-flight ping must not have been carried into the new
+      // socket's failure run either: one unanswered probe here is still only one.
+      await vi.advanceTimersByTimeAsync(1300);
+      expect(mockWsInstance).toBe(secondSocket);
+      expect(secondSocket.readyState).toBe(MockWebSocket.OPEN);
+
+      conn.close();
+    });
+
+    it('stops probing once the socket is gone, so exhaustion cannot be re-triggered', async () => {
+      const conn = await connectReady({ ...liveConfig, maxReconnectAttempts: 1 });
+
+      // Replacements must not reach open, or the attempt counter resets.
+      MockWebSocket.autoOpen = false;
+
+      mockWsInstance.simulateClose(1006, 'Connection lost');
+      await vi.advanceTimersByTimeAsync(300);
+      mockWsInstance.simulateClose(1006, 'Connection lost again');
+      await vi.advanceTimersByTimeAsync(300);
+
+      const exhaustedSocket = mockWsInstance;
+
+      // Many ping periods with no live socket must produce no probes and no
+      // further sockets: the probe is not a second source of reconnects.
+      await vi.advanceTimersByTimeAsync(10000);
+
+      expect(mockWsInstance).toBe(exhaustedSocket);
+
+      const result = await conn.request({ type: 'fs:read:req' as any, payload: {} }).catch((e: Error) => e);
+      expect((result as Error).message).toMatch(/exhaust/i);
+
+      conn.close();
+    });
+
+    it('fails callers fast after a half-open kill when reconnect is disabled', async () => {
+      // No reconnect means no storm to worry about, but the kill still earns its
+      // keep: callers learn the truth immediately instead of after 120s.
+      const conn = await connectReady({ ...liveConfig, reconnect: false });
+      const socket = mockWsInstance;
+
+      await vi.advanceTimersByTimeAsync(2300);
+
+      expect(socket.readyState).not.toBe(MockWebSocket.OPEN);
+      expect(conn.isConnected()).toBe(false);
+      expect(mockWsInstance).toBe(socket);
+
+      const result = await conn.request({ type: 'fs:read:req' as any, payload: {} }).catch((e: Error) => e);
+      expect(result).toBeInstanceOf(Error);
+      expect((result as Error).message).toMatch(/not connected/i);
+
+      conn.close();
     });
   });
 

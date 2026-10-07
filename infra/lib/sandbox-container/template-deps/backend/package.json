@@ -1,0 +1,20 @@
+{
+  "name": "react-starter-pack-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Node/TypeScript Lambda backend (API Gateway REST) for React Starter Pack",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --outfile=build/index.mjs --external:@aws-sdk/*"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.716.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.147",
+    "@types/node": "^20.17.10",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.2"
+  }
+}

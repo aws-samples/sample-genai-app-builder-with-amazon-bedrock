@@ -22,17 +22,17 @@ export function PlatformMetrics() {
   return (
     <div className="flex items-center justify-center gap-8 mb-6">
       <div className="text-center">
-        <div className="text-2xl font-bold text-bolt-elements-textPrimary">
+        <div className="text-2xl font-bold text-vibe-elements-textPrimary">
           {metrics.totalUsers.toLocaleString()}
         </div>
-        <div className="text-xs text-bolt-elements-textTertiary">Users</div>
+        <div className="text-xs text-vibe-elements-textTertiary">Users</div>
       </div>
-      <div className="w-px h-8 bg-bolt-elements-borderColor" />
+      <div className="w-px h-8 bg-vibe-elements-borderColor" />
       <div className="text-center">
-        <div className="text-2xl font-bold text-bolt-elements-textPrimary">
+        <div className="text-2xl font-bold text-vibe-elements-textPrimary">
           {metrics.websitesCreated.toLocaleString()}
         </div>
-        <div className="text-xs text-bolt-elements-textTertiary">Websites Created</div>
+        <div className="text-xs text-vibe-elements-textTertiary">Websites Created</div>
       </div>
     </div>
   );

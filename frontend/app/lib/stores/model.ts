@@ -1,9 +1,22 @@
 import { atom } from 'nanostores';
 
 export const AVAILABLE_MODELS = [
+    // Starter model (index 0 is the default — see selectedModelId below).
+    //
+    // 4.6 Sonnet rather than 5: 5 is markedly slower to first token on the same
+    // prompt, which is the latency a user actually feels when they press send.
+    // Both are selectable; this only decides where a new chat starts.
     {
         id: 'global.anthropic.claude-sonnet-4-6',
         name: 'Claude 4.6 Sonnet',
+    },
+    {
+        id: 'global.anthropic.claude-sonnet-5',
+        name: 'Claude 5 Sonnet',
+    },
+    {
+        id: 'global.anthropic.claude-opus-4-8',
+        name: 'Claude 4.8 Opus',
     },
     // // Too slow
     // {

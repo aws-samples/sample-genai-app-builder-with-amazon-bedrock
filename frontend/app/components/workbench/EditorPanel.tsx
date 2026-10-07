@@ -13,6 +13,7 @@ import { IconButton } from '~/components/ui/IconButton';
 import { PanelHeader } from '~/components/ui/PanelHeader';
 import { PanelHeaderButton } from '~/components/ui/PanelHeaderButton';
 import { shortcutEventEmitter } from '~/lib/hooks';
+import { collabStore } from '~/lib/collab/collab-store';
 import type { FileMap } from '~/lib/stores/files';
 import { themeStore } from '~/lib/stores/theme';
 import { workbenchStore } from '~/lib/stores/workbench';
@@ -60,6 +61,7 @@ export const EditorPanel = memo(
 
     const theme = useStore(themeStore);
     const showTerminal = useStore(workbenchStore.showTerminal);
+    const collabProvider = useStore(collabStore.provider);
 
     const terminalRefs = useRef<Array<TerminalRef | null>>([]);
     const terminalPanelRef = useRef<ImperativePanelHandle>(null);
@@ -127,7 +129,7 @@ export const EditorPanel = memo(
         <Panel defaultSize={showTerminal ? DEFAULT_EDITOR_SIZE : 100} minSize={20}>
           <PanelGroup direction="horizontal">
             <Panel defaultSize={20} minSize={10} collapsible>
-              <div className="flex flex-col border-r border-bolt-elements-borderColor h-full">
+              <div className="flex flex-col border-r border-vibe-elements-borderColor h-full">
                 <PanelHeader>
                   <div className="i-ph:tree-structure-duotone shrink-0" />
                   Files
@@ -170,6 +172,7 @@ export const EditorPanel = memo(
                   editable={!isStreaming && editorDocument !== undefined}
                   settings={editorSettings}
                   doc={editorDocument}
+                  collabProvider={collabProvider}
                   autoFocusOnDocumentChange={!isMobile()}
                   onScroll={onEditorScroll}
                   onChange={onEditorChange}
@@ -197,8 +200,8 @@ export const EditorPanel = memo(
           }}
         >
           <div className="h-full">
-            <div className="bg-bolt-elements-terminals-background h-full flex flex-col">
-              <div className="flex items-center bg-bolt-elements-background-depth-2 border-y border-bolt-elements-borderColor gap-1.5 min-h-[34px] p-2">
+            <div className="bg-vibe-elements-terminals-background h-full flex flex-col">
+              <div className="flex items-center bg-vibe-elements-background-depth-2 border-y border-vibe-elements-borderColor gap-1.5 min-h-[34px] p-2">
                 {Array.from({ length: terminalCount }, (_, index) => {
                   const isActive = activeTerminal === index;
 
@@ -208,8 +211,8 @@ export const EditorPanel = memo(
                       className={classNames(
                         'flex items-center text-sm cursor-pointer gap-1.5 px-3 py-2 h-full whitespace-nowrap rounded-full',
                         {
-                          'bg-bolt-elements-terminals-buttonBackground text-bolt-elements-textPrimary': isActive,
-                          'bg-bolt-elements-background-depth-2 text-bolt-elements-textSecondary hover:bg-bolt-elements-terminals-buttonBackground':
+                          'bg-vibe-elements-terminals-buttonBackground text-vibe-elements-textPrimary': isActive,
+                          'bg-vibe-elements-background-depth-2 text-vibe-elements-textSecondary hover:bg-vibe-elements-terminals-buttonBackground':
                             !isActive,
                         },
                       )}

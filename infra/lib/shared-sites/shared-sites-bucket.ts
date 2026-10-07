@@ -22,6 +22,20 @@ export class SharedSitesBucket extends Construct {
       autoDeleteObjects: true,
       encryption: props.kmsKey ? s3.BucketEncryption.KMS : s3.BucketEncryption.S3_MANAGED,
       encryptionKey: props.kmsKey,
+      // Publishing a project uploads its built files straight from the browser
+      // to presigned PUT URLs. Without a CORS rule the browser blocks that
+      // cross-origin PUT at preflight, so Share silently failed. CORS governs
+      // browser fetch/PUT only — it does not make the bucket public, which stays
+      // locked by blockPublicAccess above. AllowedOrigins is '*' because the
+      // CloudFront domain is not known at synth time and a presigned URL is
+      // already the access control; only the upload verbs are allowed.
+      cors: [{
+        allowedMethods: [s3.HttpMethods.PUT, s3.HttpMethods.GET, s3.HttpMethods.HEAD],
+        allowedOrigins: ['*'],
+        allowedHeaders: ['*'],
+        exposedHeaders: ['ETag'],
+        maxAge: 3000,
+      }],
       lifecycleRules: [{
         id: 'expire-shared-sites',
         prefix: 'shared/',

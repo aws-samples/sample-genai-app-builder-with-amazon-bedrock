@@ -12,6 +12,7 @@ export const Preview = memo(() => {
   const hasSelectedPreview = useRef(false);
   const previews = useStore(workbenchStore.previews);
   const reloadKey = useStore(workbenchStore.previewReloadKey);
+  const buildOutput = useStore(workbenchStore.previewBuildOutput);
   const activePreview = previews[activePreviewIndex];
 
   const [url, setUrl] = useState('');
@@ -84,11 +85,11 @@ export const Preview = memo(() => {
       {isPortDropdownOpen && (
         <div className="z-iframe-overlay w-full h-full absolute" onClick={() => setIsPortDropdownOpen(false)} />
       )}
-      <div className="bg-bolt-elements-background-depth-2 p-2 flex items-center gap-1.5">
+      <div className="bg-vibe-elements-background-depth-2 p-2 flex items-center gap-1.5">
         <IconButton icon="i-ph:arrow-clockwise" onClick={reloadPreview} />
         <div
-          className="flex items-center gap-1 flex-grow bg-bolt-elements-preview-addressBar-background border border-bolt-elements-borderColor text-bolt-elements-preview-addressBar-text rounded-full px-3 py-1 text-sm hover:bg-bolt-elements-preview-addressBar-backgroundHover hover:focus-within:bg-bolt-elements-preview-addressBar-backgroundActive focus-within:bg-bolt-elements-preview-addressBar-backgroundActive
-        focus-within-border-bolt-elements-borderColorActive focus-within:text-bolt-elements-preview-addressBar-textActive"
+          className="flex items-center gap-1 flex-grow bg-vibe-elements-preview-addressBar-background border border-vibe-elements-borderColor text-vibe-elements-preview-addressBar-text rounded-full px-3 py-1 text-sm hover:bg-vibe-elements-preview-addressBar-backgroundHover hover:focus-within:bg-vibe-elements-preview-addressBar-backgroundActive focus-within:bg-vibe-elements-preview-addressBar-backgroundActive
+        focus-within-border-vibe-elements-borderColorActive focus-within:text-vibe-elements-preview-addressBar-textActive"
         >
           <input
             ref={inputRef}
@@ -120,13 +121,18 @@ export const Preview = memo(() => {
           />
         )}
       </div>
-      <div className="flex-1 border-t border-bolt-elements-borderColor">
+      <div className="flex-1 border-t border-vibe-elements-borderColor">
         {activePreview ? (
           <iframe ref={iframeRef} className="border-none w-full h-full bg-white" src={iframeUrl} />
         ) : (
           <div className="flex w-full h-full flex-col justify-center items-center bg-white gap-3">
-            <div className="i-svg-spinners:90-ring-with-bg text-3xl text-bolt-elements-loader-progress"></div>
-            <p className="text-bolt-elements-textTertiary text-sm">Building your project...</p>
+            <div className="i-svg-spinners:90-ring-with-bg text-3xl text-vibe-elements-loader-progress"></div>
+            <p className="text-vibe-elements-textTertiary text-sm">Building your project...</p>
+            {buildOutput.length > 0 && (
+              <pre className="mt-2 max-h-40 w-4/5 max-w-2xl overflow-auto rounded-md bg-vibe-elements-background-depth-2 px-3 py-2 text-left text-xs leading-relaxed text-vibe-elements-textSecondary whitespace-pre-wrap">
+                {buildOutput.join('\n')}
+              </pre>
+            )}
           </div>
         )}
       </div>

@@ -25,10 +25,13 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as lambdaNodejs from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as cr from 'aws-cdk-lib/custom-resources';
 import { Duration } from 'aws-cdk-lib';
 import { SandboxInfrastructure } from './sandbox';
+import { ORIGIN_VERIFY_HEADER } from './sandbox/sandbox-alb';
 import { SharedSitesBucket } from './shared-sites/shared-sites-bucket';
 import { SharedSitesTable } from './shared-sites/shared-sites-table';
+import { ProjectsTable } from './projects/projects-table';
 
 interface InfraStackProps extends cdk.StackProps {
   config: {
@@ -672,6 +675,61 @@ The Vibe Team`,
     xOriginVerifySecret.grantRead(remixLambda);
     remixLambda.addEnvironment('X_ORIGIN_VERIFY_SECRET_ARN', xOriginVerifySecret.secretArn);
 
+    // CloudFront key pair for sandbox WebSocket signed URLs.
+    //
+    // The sandbox socket can run shell commands in the workspace, and the session
+    // id is not a secret (it appears in preview URLs and load-balancer logs), so
+    // the upgrade must be authorised. The session manager — after checking the
+    // caller owns or was invited to the session — issues a short-lived CloudFront
+    // signed URL, and CloudFront verifies it against this trusted key group before
+    // forwarding anything. The private key is held only in Secrets Manager.
+    const wsSigningKeySecret = new secretsmanager.Secret(this, 'SandboxWsSigningKey', {
+      secretName: `${stackPrefix}-sandbox-ws-signing-key`,
+      description: 'Private key for CloudFront signed URLs on sandbox WebSockets',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      encryptionKey: encryptionKey,
+    });
+
+    // Neither CloudFormation nor Secrets Manager can generate an RSA key pair, so
+    // a custom resource generates one, writes the private half into the secret
+    // and hands back only the public half. Bump KeyVersion to rotate.
+    const wsSigningKeyFn = new lambdaNodejs.NodejsFunction(this, 'SandboxWsSigningKeyFn', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: lambda.Architecture.ARM_64,
+      entry: 'lib/sandbox/ws-signing-key/index.ts',
+      handler: 'handler',
+      timeout: Duration.seconds(30),
+      bundling: { minify: true, externalModules: [] },
+    });
+    wsSigningKeySecret.grantWrite(wsSigningKeyFn);
+
+    const wsSigningKey = new cdk.CustomResource(this, 'SandboxWsSigningKeyPair', {
+      serviceToken: new cr.Provider(this, 'SandboxWsSigningKeyProvider', {
+        onEventHandler: wsSigningKeyFn,
+      }).serviceToken,
+      properties: {
+        SecretArn: wsSigningKeySecret.secretArn,
+        KeyVersion: '1',
+      },
+    });
+
+    const wsPublicKey = new cloudfront.PublicKey(this, 'SandboxWsPublicKey', {
+      encodedKey: wsSigningKey.getAttString('PublicKey'),
+      comment: `${stackPrefix} sandbox WebSocket signed URLs`,
+    });
+
+    const wsKeyGroup = new cloudfront.KeyGroup(this, 'SandboxWsKeyGroup', {
+      items: [wsPublicKey],
+      comment: `${stackPrefix} sandbox WebSocket signed URLs`,
+    });
+
+    // Sent by CloudFront on every request to the sandbox ALB, and required by
+    // every ALB forwarding rule, so the containers are reachable only through
+    // this stack's distributions and therefore only past the signed-URL check.
+    const originVerifyHeaderValue = xOriginVerifySecret
+      .secretValueFromJson('headerValue')
+      .unsafeUnwrap();
+
 
     // API Gateway REST API
     const restApi = new apigateway.RestApi(this, 'BedrockVibeRestApi', {
@@ -846,6 +904,12 @@ The Vibe Team`,
       timeout: Duration.seconds(10),
       memorySize: 128,
       architecture: lambda.Architecture.ARM_64,
+      // The authorizer verifies every token against this user pool and app
+      // client with aws-jwt-verify; without these it denies every caller.
+      environment: {
+        COGNITO_USER_POOL_ID: userPool.userPoolId,
+        COGNITO_CLIENT_ID: userPoolClient.userPoolClientId,
+      },
     });
 
     // Request authorizer using Cognito JWT
@@ -1685,6 +1749,7 @@ exports.handler = async () => {
       kmsKey: encryptionKey,
       warmPoolSize: 5,   // Min tasks always warm (instant response for first users)
       maxCapacity: 50,   // Max concurrent users (auto-scales based on demand)
+      originVerifyHeaderValue,
     });
 
     // Preview proxy: wildcard cert + CloudFront + Route53 for *.preview.<customDomain>
@@ -1698,19 +1763,33 @@ exports.handler = async () => {
         region: 'us-east-1',
       });
 
+      const previewOrigin = new origins.HttpOrigin(sandbox.alb.alb.loadBalancerDnsName, {
+        protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
+        customHeaders: { [ORIGIN_VERIFY_HEADER]: originVerifyHeaderValue },
+      });
+
       // Preview CloudFront distribution (separate from main app)
       const previewDistribution = new cloudfront.Distribution(this, 'PreviewDistribution', {
         comment: `Preview proxy for ${stackPrefix} sandbox containers`,
         domainNames: [`*.${previewDomain}`],
         certificate: previewCertificate,
         defaultBehavior: {
-          origin: new origins.HttpOrigin(sandbox.alb.alb.loadBalancerDnsName, {
-            protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
-          }),
+          origin: previewOrigin,
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
           cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
           originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+        },
+        // This distribution reaches the same ALB, so it must not become an
+        // unsigned way into the sandbox socket. The session manager never signs
+        // a URL for a preview host, so every /ws/* request here is refused.
+        additionalBehaviors: {
+          '/ws/*': {
+            origin: previewOrigin,
+            viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+            cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+            trustedKeyGroups: [wsKeyGroup],
+          },
         },
         // Enable WebSocket support for Vite HMR
         httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
@@ -1743,18 +1822,17 @@ exports.handler = async () => {
     const albOrigin = new origins.HttpOrigin(sandbox.alb.alb.loadBalancerDnsName, {
       httpPort: 443,
       protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
+      customHeaders: { [ORIGIN_VERIFY_HEADER]: originVerifyHeaderValue },
     });
 
-    // Add /ws/* behavior to the main CloudFront distribution → ALB for WebSocket
-    distribution.addBehavior('/ws/*', albOrigin, {
-      viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-      cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
-      originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
-      allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
-    });
-
-    // CloudFront Function: extract sessionId from /sandbox-preview/{sessionId}/path,
-    // set X-Sandbox-Session header for ALB listener rule matching.
+    // CloudFront Function: extract sessionId from the request path and set the
+    // X-Sandbox-Session header for ALB listener rule matching.
+    //
+    // Covers both /sandbox-preview/{sessionId}/... and /ws/{sessionId}: the WS
+    // path needs it so a session's traffic can be routed to the one container
+    // serving it. Without that, /ws/* only has per-browser cookie stickiness, so a
+    // second collaborator opening the same session lands on an arbitrary container.
+    //
     // URI is NOT modified — Vite's base is /sandbox-preview/{sessionId}/ so it
     // expects the full path including the prefix and session ID.
     const previewRewriteFn = new cloudfront.Function(this, 'PreviewRewriteFunction', {
@@ -1762,13 +1840,31 @@ exports.handler = async () => {
       code: cloudfront.FunctionCode.fromInline(`
 function handler(event) {
   var request = event.request;
-  var match = request.uri.match(/^\\/sandbox-preview\\/([^\\/]+)(\\/.*)?$/);
+  var match = request.uri.match(/^\\/sandbox-preview\\/([^\\/]+)(\\/.*)?$/)
+    || request.uri.match(/^\\/ws\\/([^\\/?#]+)/);
   if (match) {
     request.headers['x-sandbox-session'] = { value: match[1] };
   }
   return request;
 }
       `),
+    });
+
+    // Add /ws/* behavior to the main CloudFront distribution → ALB for WebSocket.
+    //
+    // Restricted to signed URLs from the trusted key group: CloudFront refuses
+    // any upgrade without a valid, unexpired signature for this session's path,
+    // so the request never reaches the load balancer or the container.
+    distribution.addBehavior('/ws/*', albOrigin, {
+      trustedKeyGroups: [wsKeyGroup],
+      viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+      cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+      originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
+      allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+      functionAssociations: [{
+        function: previewRewriteFn,
+        eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+      }],
     });
 
     // Add /sandbox-preview/* behavior → ALB (routes to preview target group on port 5173)
@@ -1794,18 +1890,43 @@ function handler(event) {
       bundling: {
         minify: true,
         sourceMap: true,
-        externalModules: ['@aws-sdk/*'],
+        // The Node 20 runtime ships some SDK v3 clients but not all of them, and
+        // Secrets Manager (used to fetch the URL signing key) is not guaranteed
+        // to be present — bundle it rather than fail at runtime.
+        externalModules: [
+          '@aws-sdk/client-dynamodb',
+          '@aws-sdk/client-ecs',
+          '@aws-sdk/client-cloudwatch',
+          '@aws-sdk/client-ssm',
+          '@aws-sdk/util-dynamodb',
+          '@aws-sdk/client-elastic-load-balancing-v2',
+        ],
       },
       environment: {
         SESSIONS_TABLE_NAME: sandbox.sessions.table.tableName,
         ECS_CLUSTER_ARN: sandbox.cluster.cluster.clusterArn,
         ECS_SERVICE_NAME: sandbox.cluster.service.serviceName,
         PREVIEW_DOMAIN: config.customDomain ? `preview.${config.customDomain}` : 'preview.localhost',
-        ALB_DNS_NAME: sandbox.alb.alb.loadBalancerDnsName,
         CLOUDFRONT_DOMAIN_PARAM: `/${stackPrefix}/cloudfront/domain-name`,
         METRIC_NAMESPACE: `${stackPrefix}/Sandbox`,
+        // Needed to pin a session's WebSocket traffic to the container serving
+        // it, so every collaborator on a shared session reaches the same one.
+        SANDBOX_ALB_LISTENER_ARN: sandbox.alb.httpsListener.listenerArn,
+        SANDBOX_VPC_ID: sandbox.vpc.vpc.vpcId,
+        STACK_PREFIX: stackPrefix,
+        // Only the ARN — the key itself is fetched at runtime so it never appears
+        // in the template or the function's visible configuration.
+        WS_SIGNING_KEY_SECRET_ARN: wsSigningKeySecret.secretArn,
+        WS_SIGNING_KEY_PAIR_ID: wsPublicKey.publicKeyId,
+        // Per-session ALB rules must require the same origin-verify header as
+        // the static ones.
+        X_ORIGIN_VERIFY_SECRET_ARN: xOriginVerifySecret.secretArn,
       },
     });
+
+    // The session manager is the only issuer of WebSocket signed URLs.
+    wsSigningKeySecret.grantRead(sessionManagerLambda);
+    xOriginVerifySecret.grantRead(sessionManagerLambda);
 
     // Grant permissions
     sandbox.sessions.table.grantReadWriteData(sessionManagerLambda);
@@ -1836,6 +1957,48 @@ function handler(event) {
         StringEquals: { 'cloudwatch:namespace': `${stackPrefix}/Sandbox` },
       },
     }));
+    // Per-session WebSocket routing: the Lambda creates a target group holding
+    // the session's container plus a listener rule that steers the session there,
+    // and removes both when the session ends.
+    //
+    // CreateTargetGroup and the Describe* calls do not support resource-level
+    // permissions, so they are necessarily '*'. The mutating calls that do
+    // support it are scoped to this ALB's listener and to target groups created
+    // for it.
+    sessionManagerLambda.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'elasticloadbalancing:CreateTargetGroup',
+        'elasticloadbalancing:DescribeTargetGroups',
+        'elasticloadbalancing:DescribeRules',
+        'elasticloadbalancing:DescribeTargetHealth',
+      ],
+      resources: ['*'],
+    }));
+    sessionManagerLambda.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'elasticloadbalancing:CreateRule',
+        'elasticloadbalancing:DeleteRule',
+        'elasticloadbalancing:ModifyRule',
+        // CreateRule passes tags, which ELBv2 authorises separately against the
+        // rule being created — without this the call fails with AccessDenied.
+        'elasticloadbalancing:AddTags',
+      ],
+      resources: [
+        sandbox.alb.httpsListener.listenerArn,
+        `arn:aws:elasticloadbalancing:${this.region}:${this.account}:listener-rule/app/${sandbox.alb.alb.loadBalancerName}/*`,
+      ],
+    }));
+    sessionManagerLambda.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'elasticloadbalancing:RegisterTargets',
+        'elasticloadbalancing:DeregisterTargets',
+        'elasticloadbalancing:DeleteTargetGroup',
+        'elasticloadbalancing:AddTags',
+      ],
+      resources: [
+        `arn:aws:elasticloadbalancing:${this.region}:${this.account}:targetgroup/sbx-s-*/*`,
+      ],
+    }));
     // EventBridge rule to trigger session cleanup every 5 minutes
     new events.Rule(this, 'SessionCleanupRule', {
       schedule: events.Schedule.rate(Duration.minutes(5)),
@@ -1845,8 +2008,14 @@ function handler(event) {
 
     // Session Manager API via API Gateway
     const sessionResource = restApi.root.addResource('session');
+    // `join` is a sibling of `{id}`, not a child: a joiner redeems an invite
+    // token without knowing the session id, so the token identifies the session.
+    // API Gateway prefers the literal path segment over the `{id}` variable.
+    const joinResource = sessionResource.addResource('join');
     const sessionIdResource = sessionResource.addResource('{id}');
     const heartbeatResource = sessionIdResource.addResource('heartbeat');
+    const inviteResource = sessionIdResource.addResource('invite');
+    const bindResource = sessionIdResource.addResource('bind');
 
     const sessionLambdaIntegration = new apigateway.LambdaIntegration(sessionManagerLambda);
     const sessionAuthOptions = {
@@ -1857,6 +2026,14 @@ function handler(event) {
     sessionIdResource.addMethod('GET', sessionLambdaIntegration, sessionAuthOptions);
     sessionIdResource.addMethod('DELETE', sessionLambdaIntegration, sessionAuthOptions);
     heartbeatResource.addMethod('POST', sessionLambdaIntegration, sessionAuthOptions);
+    // Both collaboration routes stay behind the same authorizer: an invite widens
+    // access for an authenticated user, it never creates anonymous access.
+    inviteResource.addMethod('POST', sessionLambdaIntegration, sessionAuthOptions);
+    // Revoking a link is what replaced its expiry, so it ships alongside minting
+    // one rather than as a later addition.
+    inviteResource.addMethod('DELETE', sessionLambdaIntegration, sessionAuthOptions);
+    joinResource.addMethod('POST', sessionLambdaIntegration, sessionAuthOptions);
+    bindResource.addMethod('POST', sessionLambdaIntegration, sessionAuthOptions);
 
     // Throttle session creation to prevent warm pool exhaustion
     restApi.addUsagePlan('SessionCreationThrottle', {
@@ -1927,6 +2104,79 @@ function handler(event) {
     shareResource.addMethod('POST', shareLambdaIntegration, shareAuthOptions);
     shareResource.addMethod('GET', shareLambdaIntegration, shareAuthOptions);
     shareIdResource.addMethod('DELETE', shareLambdaIntegration, shareAuthOptions);
+
+    // ========================================
+    // PROJECTS (durable chat history)
+    // ========================================
+
+    const projectsTable = new ProjectsTable(this, 'ProjectsTable', {
+      stackPrefix,
+      kmsKey: encryptionKey,
+    });
+
+    const projectsLambda = new lambdaNodejs.NodejsFunction(this, 'ProjectsLambda', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: lambda.Architecture.ARM_64,
+      entry: 'lib/projects/projects-lambda/index.ts',
+      handler: 'handler',
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      bundling: {
+        minify: true,
+        sourceMap: true,
+        // Listed individually rather than as '@aws-sdk/*': the Node 20 runtime
+        // ships some SDK v3 clients but not all of them, so anything not named
+        // here is bundled rather than assumed present.
+        externalModules: [
+          '@aws-sdk/client-dynamodb',
+          '@aws-sdk/client-ssm',
+          '@aws-sdk/util-dynamodb',
+        ],
+      },
+      environment: {
+        PROJECTS_TABLE_NAME: projectsTable.table.tableName,
+        CLOUDFRONT_DOMAIN_PARAM: `/${stackPrefix}/cloudfront/domain-name`,
+      },
+    });
+
+    projectsTable.table.grantReadWriteData(projectsLambda);
+    projectsLambda.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ssm:GetParameter'],
+      resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/${stackPrefix}/cloudfront/*`],
+    }));
+
+    // Redeeming an invite grants the inviter's project as well as their sandbox, so
+    // the session manager writes the membership item. Granted here rather than at
+    // its declaration because the table is defined further down.
+    sessionManagerLambda.addEnvironment('PROJECTS_TABLE_NAME', projectsTable.table.tableName);
+    projectsTable.table.grantWriteData(sessionManagerLambda);
+
+    const projectsResource = restApi.root.addResource('projects');
+    const projectIdResource = projectsResource.addResource('{id}');
+    const projectMessagesResource = projectIdResource.addResource('messages');
+    // Granting access to a project's conversation, so someone invited into a live
+    // session can read the history behind the files they are editing.
+    const projectMembersResource = projectIdResource.addResource('members');
+    // Membership no longer expires, so it has to be listable and revocable. The
+    // path variable also carries the literal `me`, which is how a collaborator
+    // leaves a project they were invited into.
+    const projectMemberIdResource = projectMembersResource.addResource('{memberId}');
+    const projectsLambdaIntegration = new apigateway.LambdaIntegration(projectsLambda);
+    // Chat history is per-user data, so every route sits behind the same
+    // authorizer — there is no anonymous read of someone's conversation.
+    const projectsAuthOptions = {
+      authorizer: jwtAuthorizer,
+      authorizationType: apigateway.AuthorizationType.CUSTOM,
+    };
+    projectsResource.addMethod('GET', projectsLambdaIntegration, projectsAuthOptions);
+    projectsResource.addMethod('POST', projectsLambdaIntegration, projectsAuthOptions);
+    projectIdResource.addMethod('GET', projectsLambdaIntegration, projectsAuthOptions);
+    projectIdResource.addMethod('PATCH', projectsLambdaIntegration, projectsAuthOptions);
+    projectIdResource.addMethod('DELETE', projectsLambdaIntegration, projectsAuthOptions);
+    projectMessagesResource.addMethod('POST', projectsLambdaIntegration, projectsAuthOptions);
+    projectMembersResource.addMethod('POST', projectsLambdaIntegration, projectsAuthOptions);
+    projectMembersResource.addMethod('GET', projectsLambdaIntegration, projectsAuthOptions);
+    projectMemberIdResource.addMethod('DELETE', projectsLambdaIntegration, projectsAuthOptions);
 
     // ========================================
     // OUTPUTS

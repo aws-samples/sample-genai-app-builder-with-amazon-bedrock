@@ -124,17 +124,17 @@ export function NewTemplateModal({ open, onClose, onCreated }: NewTemplateModalP
       <div
         role="dialog"
         aria-modal="true"
-        className="w-full max-w-lg rounded-lg border border-bolt-elements-borderColor bg-bolt-elements-background-depth-1"
+        className="w-full max-w-lg rounded-lg border border-vibe-elements-borderColor bg-vibe-elements-background-depth-1"
       >
-        <header className="flex items-center justify-between border-b border-bolt-elements-borderColor px-6 py-4">
-          <h2 className="text-base font-medium text-bolt-elements-textPrimary">
+        <header className="flex items-center justify-between border-b border-vibe-elements-borderColor px-6 py-4">
+          <h2 className="text-base font-medium text-vibe-elements-textPrimary">
             New brand template
           </h2>
           <button
             type="button"
             onClick={close}
             aria-label="Close"
-            className="rounded p-1 text-bolt-elements-textTertiary transition-colors hover:bg-bolt-elements-background-depth-3 hover:text-bolt-elements-textPrimary"
+            className="rounded p-1 text-vibe-elements-textTertiary transition-colors hover:bg-vibe-elements-background-depth-3 hover:text-vibe-elements-textPrimary"
           >
             <div className="i-ph:x text-base" />
           </button>
@@ -148,7 +148,7 @@ export function NewTemplateModal({ open, onClose, onCreated }: NewTemplateModalP
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Linear-inspired"
               maxLength={80}
-              className="w-full rounded border border-bolt-elements-borderColor bg-bolt-elements-background-depth-2 px-3 py-2 text-sm text-bolt-elements-textPrimary placeholder:text-bolt-elements-textTertiary focus:border-bolt-elements-focus focus:outline-none"
+              className="w-full rounded border border-vibe-elements-borderColor bg-vibe-elements-background-depth-2 px-3 py-2 text-sm text-vibe-elements-textPrimary placeholder:text-vibe-elements-textTertiary focus:border-vibe-elements-focus focus:outline-none"
             />
           </FormField>
 
@@ -159,7 +159,7 @@ export function NewTemplateModal({ open, onClose, onCreated }: NewTemplateModalP
               placeholder="Short note about when to reach for this template."
               maxLength={500}
               rows={2}
-              className="w-full resize-none rounded border border-bolt-elements-borderColor bg-bolt-elements-background-depth-2 px-3 py-2 text-sm text-bolt-elements-textPrimary placeholder:text-bolt-elements-textTertiary focus:border-bolt-elements-focus focus:outline-none"
+              className="w-full resize-none rounded border border-vibe-elements-borderColor bg-vibe-elements-background-depth-2 px-3 py-2 text-sm text-vibe-elements-textPrimary placeholder:text-vibe-elements-textTertiary focus:border-vibe-elements-focus focus:outline-none"
             />
           </FormField>
 
@@ -169,12 +169,12 @@ export function NewTemplateModal({ open, onClose, onCreated }: NewTemplateModalP
               value={tagsText}
               onChange={(e) => setTagsText(e.target.value)}
               placeholder="editorial, blue, minimal"
-              className="w-full rounded border border-bolt-elements-borderColor bg-bolt-elements-background-depth-2 px-3 py-2 text-sm text-bolt-elements-textPrimary placeholder:text-bolt-elements-textTertiary focus:border-bolt-elements-focus focus:outline-none"
+              className="w-full rounded border border-vibe-elements-borderColor bg-vibe-elements-background-depth-2 px-3 py-2 text-sm text-vibe-elements-textPrimary placeholder:text-vibe-elements-textTertiary focus:border-vibe-elements-focus focus:outline-none"
             />
           </FormField>
 
           <FormField label="Source">
-            <div className="flex gap-2 rounded border border-bolt-elements-borderColor bg-bolt-elements-background-depth-2 p-1 text-sm">
+            <div className="flex gap-2 rounded border border-vibe-elements-borderColor bg-vibe-elements-background-depth-2 p-1 text-sm">
               <SourceTab active={source === 'images'} onClick={() => setSource('images')}>
                 Inspiration images
               </SourceTab>
@@ -198,7 +198,7 @@ export function NewTemplateModal({ open, onClose, onCreated }: NewTemplateModalP
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={files.length >= MAX_FILES}
-                className="flex flex-col items-center justify-center gap-1 rounded-md border border-dashed border-bolt-elements-borderColor bg-bolt-elements-background-depth-2 px-4 py-10 text-sm text-bolt-elements-textSecondary transition-colors hover:border-bolt-elements-focus hover:text-bolt-elements-textPrimary disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex flex-col items-center justify-center gap-1 rounded-md border border-dashed border-vibe-elements-borderColor bg-vibe-elements-background-depth-2 px-4 py-10 text-sm text-vibe-elements-textSecondary transition-colors hover:border-vibe-elements-focus hover:text-vibe-elements-textPrimary disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <div className="i-ph:upload-simple text-xl" />
                 <span>
@@ -208,7 +208,7 @@ export function NewTemplateModal({ open, onClose, onCreated }: NewTemplateModalP
                     ? 'Maximum 5 images'
                     : `Add more (${MAX_FILES - files.length} remaining)`}
                 </span>
-                <span className="text-xs text-bolt-elements-textTertiary">
+                <span className="text-xs text-vibe-elements-textTertiary">
                   PNG · JPG · WebP, up to 5 files
                 </span>
               </button>
@@ -217,18 +217,18 @@ export function NewTemplateModal({ open, onClose, onCreated }: NewTemplateModalP
                   {files.map((file, idx) => (
                     <li
                       key={`${file.name}-${idx}`}
-                      className="flex items-center justify-between gap-2 rounded border border-bolt-elements-borderColor bg-bolt-elements-background-depth-2 px-3 py-2 text-xs"
+                      className="flex items-center justify-between gap-2 rounded border border-vibe-elements-borderColor bg-vibe-elements-background-depth-2 px-3 py-2 text-xs"
                     >
-                      <span className="min-w-0 flex-1 truncate text-bolt-elements-textPrimary">
+                      <span className="min-w-0 flex-1 truncate text-vibe-elements-textPrimary">
                         {file.name}
                       </span>
-                      <span className="shrink-0 text-bolt-elements-textTertiary">
+                      <span className="shrink-0 text-vibe-elements-textTertiary">
                         {formatBytes(file.size)}
                       </span>
                       <button
                         type="button"
                         onClick={() => removeFile(idx)}
-                        className="shrink-0 rounded p-1 text-bolt-elements-textTertiary transition-colors hover:bg-bolt-elements-background-depth-3 hover:text-red-400"
+                        className="shrink-0 rounded p-1 text-vibe-elements-textTertiary transition-colors hover:bg-vibe-elements-background-depth-3 hover:text-red-400"
                         aria-label={`Remove ${file.name}`}
                       >
                         <div className="i-ph:x text-xs" />
@@ -245,9 +245,9 @@ export function NewTemplateModal({ open, onClose, onCreated }: NewTemplateModalP
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 placeholder="https://linear.app"
-                className="w-full rounded border border-bolt-elements-borderColor bg-bolt-elements-background-depth-2 px-3 py-2 text-sm text-bolt-elements-textPrimary placeholder:text-bolt-elements-textTertiary focus:border-bolt-elements-focus focus:outline-none"
+                className="w-full rounded border border-vibe-elements-borderColor bg-vibe-elements-background-depth-2 px-3 py-2 text-sm text-vibe-elements-textPrimary placeholder:text-vibe-elements-textTertiary focus:border-vibe-elements-focus focus:outline-none"
               />
-              <p className="mt-1 text-xs text-bolt-elements-textTertiary">
+              <p className="mt-1 text-xs text-vibe-elements-textTertiary">
                 We fetch the public page. No login-gated content.
               </p>
             </FormField>
@@ -260,12 +260,12 @@ export function NewTemplateModal({ open, onClose, onCreated }: NewTemplateModalP
           )}
         </div>
 
-        <footer className="flex items-center justify-end gap-2 border-t border-bolt-elements-borderColor px-6 py-4">
+        <footer className="flex items-center justify-end gap-2 border-t border-vibe-elements-borderColor px-6 py-4">
           <button
             type="button"
             onClick={close}
             disabled={submitting}
-            className="rounded-md bg-bolt-elements-button-secondary-background px-3 py-1.5 text-sm text-bolt-elements-button-secondary-text transition-colors hover:bg-bolt-elements-button-secondary-backgroundHover disabled:opacity-50"
+            className="rounded-md bg-vibe-elements-button-secondary-background px-3 py-1.5 text-sm text-vibe-elements-button-secondary-text transition-colors hover:bg-vibe-elements-button-secondary-backgroundHover disabled:opacity-50"
           >
             Cancel
           </button>
@@ -273,7 +273,7 @@ export function NewTemplateModal({ open, onClose, onCreated }: NewTemplateModalP
             type="button"
             onClick={submit}
             disabled={submitting}
-            className="inline-flex items-center gap-2 rounded-md bg-bolt-elements-button-primary-background px-3 py-1.5 text-sm font-medium text-bolt-elements-button-primary-text transition-colors hover:bg-bolt-elements-button-primary-backgroundHover disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-md bg-vibe-elements-button-primary-background px-3 py-1.5 text-sm font-medium text-vibe-elements-button-primary-text transition-colors hover:bg-vibe-elements-button-primary-backgroundHover disabled:opacity-50"
           >
             {submitting && (
               <div className="i-svg-spinners:90-ring-with-bg text-sm" />
@@ -297,7 +297,7 @@ function FormField({
 }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-xs font-medium text-bolt-elements-textSecondary">
+      <span className="text-xs font-medium text-vibe-elements-textSecondary">
         {label}
         {required && <span className="ml-0.5 text-red-400">*</span>}
       </span>
@@ -321,8 +321,8 @@ function SourceTab({
       onClick={onClick}
       className={`flex-1 rounded px-3 py-1.5 text-sm transition-colors ${
         active
-          ? 'bg-bolt-elements-background-depth-3 text-bolt-elements-textPrimary'
-          : 'text-bolt-elements-textSecondary hover:text-bolt-elements-textPrimary'
+          ? 'bg-vibe-elements-background-depth-3 text-vibe-elements-textPrimary'
+          : 'text-vibe-elements-textSecondary hover:text-vibe-elements-textPrimary'
       }`}
     >
       {children}

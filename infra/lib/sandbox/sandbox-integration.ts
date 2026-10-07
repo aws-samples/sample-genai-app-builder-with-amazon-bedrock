@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as cdk from 'aws-cdk-lib';
-import * as ecr from 'aws-cdk-lib/aws-ecr';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
@@ -20,6 +20,10 @@ export interface SandboxInfrastructureProps {
   maxCapacity?: number;
   /** Optional container image override for testing (avoids Docker build) */
   image?: import('aws-cdk-lib/aws-ecs').ContainerImage;
+  /** Email(s) notified when the weekly container patch build fails. */
+  alarmEmail?: string | string[];
+  /** Value of the `X-Origin-Verify` header CloudFront sends to the sandbox ALB. */
+  originVerifyHeaderValue: string;
 }
 
 export class SandboxInfrastructure extends Construct {
@@ -33,7 +37,7 @@ export class SandboxInfrastructure extends Construct {
   constructor(scope: Construct, id: string, props: SandboxInfrastructureProps) {
     super(scope, id);
 
-    const { stackPrefix, kmsKey, logsBucket, warmPoolSize = 5, maxCapacity = 50 } = props;
+    const { stackPrefix, kmsKey, logsBucket, warmPoolSize = 5, maxCapacity = 50, alarmEmail } = props;
 
     // VPC
     this.vpc = new SandboxVpc(this, 'Vpc', { stackPrefix });
@@ -61,11 +65,17 @@ export class SandboxInfrastructure extends Construct {
       vpc: this.vpc.vpc,
       albSg: this.security.albSg,
       logsBucket,
+      originVerifyHeaderValue: props.originVerifyHeaderValue,
     });
 
-    // Register the ECS service with the sidecar target group (port 8080).
-    // Preview traffic (port 5173) is routed via per-session ALB target groups
-    // created dynamically by the session manager Lambda — not via ECS service registration.
+    // Register the ECS service with the sidecar target group (port 8080). This
+    // group backs the static /ws/* and /sandbox-preview/* rules, which balance
+    // across the whole warm pool.
+    //
+    // A session that has been claimed also gets its own target group and listener
+    // rule, created by the session manager Lambda (see alb-routing.ts), so all of
+    // its collaborators reach the single container serving it. Those per-session
+    // rules take precedence; the static rules remain the fallback.
     this.alb.sidecarTargetGroup.addTarget(
       this.cluster.service.loadBalancerTarget({
         containerName: `${stackPrefix}-sandbox-container`,
@@ -79,14 +89,34 @@ export class SandboxInfrastructure extends Construct {
       kmsKey,
     });
 
-    // Scheduled container rebuild (weekly) to pick up OS security patches
-    const ecrRepo = ecr.Repository.fromRepositoryName(this, 'EcrRepo', `${stackPrefix}-sandbox`);
+    // Scheduled container rebuild (weekly) to pick up OS security patches.
+    // Pushes to a dedicated mutable ECR repo, registers a new task def
+    // revision pointing to the patched image, then forces a new ECS deployment.
     this.ecrRebuild = new SandboxEcrRebuild(this, 'EcrRebuild', {
       stackPrefix,
-      repository: ecrRepo,
       cluster: this.cluster.cluster,
       service: this.cluster.service,
+      alarmEmail,
     });
+
+    // Grant the ECS execution role permission to pull from the patch repo.
+    // We use an explicit policy statement instead of grantPull() to avoid
+    // CDK merging it with the fromAsset() grant and corrupting the ARN.
+    const account = cdk.Stack.of(this).account;
+    const region = cdk.Stack.of(this).region;
+    this.cluster.taskDefinition.executionRole!.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          'ecr:BatchCheckLayerAvailability',
+          'ecr:BatchGetImage',
+          'ecr:GetDownloadUrlForLayer',
+        ],
+        resources: [
+          this.ecrRebuild.repository.repositoryArn,
+          `arn:aws:ecr:${region}:${account}:repository/cdk-hnb659fds-container-assets-${account}-${region}`,
+        ],
+      }),
+    );
 
     // CloudFormation Outputs
     new cdk.CfnOutput(scope, 'SandboxAlbDnsName', {
